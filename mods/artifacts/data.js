@@ -240,18 +240,16 @@ export async function investigate(p) {
   return { name: s.name ?? p.repo.split("/").pop(), machine: p.machine, folder: s.folder ?? p.cwd, command: s.command ?? "", stop: s.stop || null, port: s.fixedPort ?? null, path: s.path ?? "/", notes: s.notes ?? "" };
 }
 
-const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const SHOTS = "data/artifacts/shots";
 let queue = Promise.resolve();
 
-// Headless Chrome with its own profile, one at a time. Returns the shot's path relative to the app home (what image() takes).
+// Headless Chrome (shot.ts) with its own profile, one at a time, after the page has loaded and gone quiet. Returns the path relative to the app home (what image() takes).
 export function capture(appHome, key, target) {
   const name = `${key.split(":")[0]}-${hash(key)}-${Date.now().toString(36)}.png`;
   const run = async () => {
     await exec("mkdir", ["-p", `${appHome}/${SHOTS}`]);
-    const r = await exec(CHROME, ["--headless", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--mute-audio",
-      `--user-data-dir=${appHome}/data/artifacts/chrome`, "--window-size=1280,720", "--timeout=4000", `--screenshot=${appHome}/${SHOTS}/${name}`, target], { timeout: 45000 });
-    if (!/bytes written to file/.test(r.stderr + r.stdout)) throw new Error("no screenshot");
+    const r = await sh('exec "$HOME/.bun/bin/bun" "$@"', [`${appHome}/mods/artifacts/shot.ts`, target, `${appHome}/${SHOTS}/${name}`, `${appHome}/data/artifacts/chrome`], null, 45000);
+    if (!/bytes written to file/.test(r.stderr + r.stdout)) throw new Error(r.stderr.trim() || "no screenshot");
     return `${SHOTS}/${name}`;
   };
   const p = queue.then(run, run);

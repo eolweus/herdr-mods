@@ -12,6 +12,8 @@ const ICON = (name) => `mods/artifacts/${name}.svg`;
 // Module state is shared by every copy of the page, so two copies never shoot the same thing at once.
 const shooting = new Set();
 const stopWhat = (g) => g.procs.map((p) => (p.docker ? `docker compose -p ${p.docker} stop` : `kill ${p.pid}`)).join(", ");
+// Bump to retake every stored shot with a better capture.
+const SHOT_V = 3;
 const shots = () => shared("artifacts.shots") ?? {};
 
 function find(node, id) {
@@ -122,7 +124,7 @@ export default class Artifacts extends View {
         const path = await capture(appHome(), key, url);
         const all = shots();
         const old = all[key]?.path;
-        setShared("artifacts.shots", { ...all, [key]: { path, at: Date.now() } });
+        setShared("artifacts.shots", { ...all, [key]: { path, at: Date.now(), v: SHOT_V } });
         if (old) exec("rm", ["-f", `${appHome()}/${old}`]).catch(() => null);
       } catch {}
       shooting.delete(key);
@@ -134,8 +136,11 @@ export default class Artifacts extends View {
   autoShots(cx) {
     for (const app of this.registry.apps) {
       const r = this.liveApp(app);
+      const ext = r ? null : this.outside(app);
+      const port = r && this.ready.has(r.address) ? r.port : ext?.http[0];
       const key = `app:${app.id}`;
-      if (r && this.ready.has(r.address) && !this.shotThisRun.has(key)) this.takeShot(key, () => reach(app.machine, r.port, this.live).then((u) => u + (app.path ?? "/")), cx);
+      const fresh = shots()[key]?.v === SHOT_V;
+      if (port && !this.shotThisRun.has(key) && (r || !fresh)) this.takeShot(key, () => reach(app.machine, port, this.live).then((u) => u + (app.path ?? "/")), cx);
     }
     for (const h of this.html.local ?? []) {
       const key = `html:${h.id}`;
