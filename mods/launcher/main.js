@@ -7,6 +7,8 @@ const ACTIONS = [
   ["c", "Claude", "A Claude chat in this folder"],
   ["f", "Folder", "Pick another folder first"],
 ];
+const BROWSER = ["b", "Browser", "A web browser (terminal-browser)"];
+const BROWSER_ARGV = ["/bin/zsh", "-lc", 'cd "$1" 2>/dev/null; exec herdr-browser here', "zsh"];
 
 const TITLES = { split: "What goes here?", tab: "New tab", space: "New space" };
 
@@ -187,6 +189,12 @@ export default class Launcher extends View {
     this.replace((source) => run("pane.split", { pane: source, direction: this.direction, ...chat }), () => this.fillTab(chat));
   }
 
+  browser() {
+    const split = { argv: [...BROWSER_ARGV, this.cwd ?? ""] };
+    if (this.mode === "tab") return this.fillTab(split);
+    this.replace((source) => run("pane.split", { pane: source, direction: this.direction, ...split }), () => this.fillTab(split));
+  }
+
   pickFolder() {
     this.pickId = `launcher-${Date.now().toString(36)}`;
     openOverlay({ mod: "folder-picker", kind: "dialog", width: 320, props: { id: this.pickId, machine: this.machine, folder: this.cwd } });
@@ -205,6 +213,7 @@ export default class Launcher extends View {
     if (k === "t") this.terminal(cx);
     else if (k === "c") this.claude(cx);
     else if (k === "f") this.pickFolder();
+    else if (k === "b" && this.canBrowse()) this.browser();
     else if (k === "m" && this.mode === "space") this.nextMachine(cx);
     else if (k === "q") this.dismiss();
     cx.notify();
@@ -219,13 +228,19 @@ export default class Launcher extends View {
     cx.notify();
   }
 
+  // herdr-browser and the bridge only exist on this Mac.
+  canBrowse() {
+    return this.mode !== "space" && !this.machine;
+  }
+
   render() {
     this.takePick();
     const t = theme();
     const badge = (k) => div().w(26).h(26).flex().items_center().justify_center().rounded(7)
       .border_1().border_color(t.input).bg(t.raised).text_size(12.5).font_semibold().text_color(t.accent).child(k.toUpperCase());
     const others = machines().filter((m) => m.layout !== "unavailable").length > 1;
-    const actions = this.mode === "space" && others ? [...ACTIONS, ["m", "Machine", `On ${this.machine ?? "this computer"} · press to switch`]] : ACTIONS;
+    const actions = this.mode === "space" && others ? [...ACTIONS, ["m", "Machine", `On ${this.machine ?? "this computer"} · press to switch`]]
+      : this.canBrowse() ? [...ACTIONS, BROWSER] : ACTIONS;
     const menu = v_flex().gap(4).w(340).children(actions.map(([k, label, hint]) => {
       return h_flex().id(`launch-${k}`).gap(14).px(12).py(9).items_center().rounded(10)
         .cursor_pointer().hover((s) => s.bg(t.hover))

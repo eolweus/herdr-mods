@@ -7,5 +7,20 @@
     "width": 560,
     "height": 460
   },
-  "description": "Cmd+T, Cmd+N and Cmd+D open a small launcher: start a terminal or a Claude chat, here or in another folder or on another machine."
+  "description": "Cmd+T, Cmd+N and Cmd+D open a small launcher: start a terminal, a Claude chat or a browser, here or in another folder or on another machine.",
+  "palette": [
+    {
+      "title": "Open browser",
+      "command": "terminal.open",
+      "args": {
+        "place": "right",
+        "argv": [
+          "/bin/zsh",
+          "-lc",
+          "exec herdr-browser here"
+        ]
+      },
+      "words": "web url terminal-browser"
+    }
+  ]
 }
