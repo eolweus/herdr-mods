@@ -1,6 +1,6 @@
 import { exec, hc, readTextFile, setShared, writeTextFile } from "herdr";
 
-// port<TAB>pid<TAB>cwd<TAB>args<TAB>http status ("000": not http)<TAB>git root for this user's TCP listeners on ports >= 1024.
+// port<TAB>pid<TAB>cwd<TAB>args<TAB>status|content-type of / ("000": not http)<TAB>git root for this user's TCP listeners on ports >= 1024.
 export const LISTEN = `
 me=$(id -u)
 if [ "$(uname)" = Darwin ]; then
@@ -11,7 +11,7 @@ fi | sort -u | while IFS="$(printf '\\t')" read -r port pid; do
   [ "$port" -ge 1024 ] 2>/dev/null || continue
   if [ -d /proc ]; then cwd=$(readlink "/proc/$pid/cwd"); args=$(tr '\\0' ' ' <"/proc/$pid/cmdline")
   else cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'); args=$(ps -o args= -p "$pid"); fi
-  code=$(curl -s -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null)
+  code=$(curl -s -m 1 -o /dev/null -w '%{http_code}|%{content_type}' "http://127.0.0.1:$port/" 2>/dev/null)
   repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
   printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "$pid" "$cwd" "$args" "\${code:-000}" "$repo"
 done
@@ -21,7 +21,7 @@ while IFS="$(printf '\\t')" read -r proj dir name image ports; do
   [ -n "$proj" ] && [ -n "$dir" ] || continue
   repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
   echo "$ports" | tr ',' '\\n' | sed -n 's/.*:\\([0-9][0-9]*\\)->.*/\\1/p' | sort -u | while read -r port; do
-    code=$(curl -s -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null)
+    code=$(curl -s -m 1 -o /dev/null -w '%{http_code}|%{content_type}' "http://127.0.0.1:$port/" 2>/dev/null)
     printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "docker:$proj" "$dir" "docker compose · $name ($image)" "\${code:-000}" "$repo"
   done
 done
@@ -55,10 +55,13 @@ export function parseListeners(stdout, machine) {
     const [port, pid, cwd, args, code, repo] = line.split("\t");
     if (!port || !cwd || !/^\/(Users|home)\//.test(cwd) || NOISE.test(args ?? "") || OWN.test(cwd)) continue;
     const docker = pid.startsWith("docker:") ? pid.slice(7) : null;
-    const p = byPid.get(pid) ?? { pid, docker, cwd, repo: repo || cwd, args: (args ?? "").trim(), ports: [], http: [] };
+    const p = byPid.get(pid) ?? { pid, docker, cwd, repo: repo || cwd, args: (args ?? "").trim(), ports: [], http: [], pages: [] };
     if (docker && !p.args.includes(args.trim())) p.args += `, ${args.trim().replace(/^docker compose · /, "")}`;
-    if (!p.ports.includes(Number(port))) p.ports.push(Number(port));
-    if (code && code !== "000" && !p.http.includes(Number(port))) p.http.push(Number(port));
+    const n = Number(port);
+    const [status, type] = (code ?? "000").split("|");
+    if (!p.ports.includes(n)) p.ports.push(n);
+    if (status !== "000" && !p.http.includes(n)) p.http.push(n);
+    if (/^[23]/.test(status) && /html/.test(type ?? "") && !p.pages.includes(n)) p.pages.push(n);
     byPid.set(pid, p);
   }
   const byRepo = new Map();
@@ -70,8 +73,9 @@ export function parseListeners(stdout, machine) {
   return [...byRepo.values()].map((g) => {
     g.procs.sort((a, b) => (b.http.length > 0) - (a.http.length > 0) || a.cwd.length - b.cwd.length);
     const ports = g.procs.flatMap((p) => p.ports).sort((a, b) => a - b);
-    const http = g.procs.flatMap((p) => p.http).sort((a, b) => a - b);
-    return { ...g, id: `${machine ?? "local"}:${g.repo}`, ports, http, port: http[0] ?? ports[0] };
+    const pages = g.procs.flatMap((p) => p.pages).sort((a, b) => a - b);
+    const http = [...pages, ...g.procs.flatMap((p) => p.http).filter((x) => !pages.includes(x)).sort((a, b) => a - b)];
+    return { ...g, id: `${machine ?? "local"}:${g.repo}`, ports, http, pages, likely: pages.length > 0, port: http[0] ?? ports[0] };
   });
 }
 
@@ -129,6 +133,12 @@ export async function launch(name, machine, folder, command, port) {
     ...(folder ? ["--cwd", folder] : []), "--", "sh", "-c", 'exec "${SHELL:-sh}" -lic "$1"', "sh", `export PORT=${port}; ${command}`]);
   if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim() || "hc run failed");
   return JSON.parse(r.stdout).address;
+}
+
+// An app's own stop command, run like its start command.
+export async function runStop(app, port) {
+  const r = await sh('cd "$1" && exec "${SHELL:-sh}" -lic "$2"', [app.folder, `export PORT=${port ?? ""}; ${app.stop}`], app.machine, 120000);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || r.stdout.trim() || "stop command failed");
 }
 
 export async function stop(address) {
@@ -190,20 +200,24 @@ export async function updateRegistry(change) {
 }
 
 export function setupPrompt(g) {
-  const procs = g.procs.map((p) => `- pid ${p.pid}, listening on ${p.ports.join(", ")}, cwd ${p.cwd}, command: ${p.args}`).join("\n");
-  return `A local web app is running on this machine and I want to be able to start it again later from a launcher.
-${g.procs.length > 1 ? "These processes all run out of the same repo, likely one app plus its helpers (a dev script, an API, a stand-in service):" : "Running process:"}
-${procs}
+  const line = (p) => p.docker
+    ? `- docker compose project "${p.docker}" started from ${p.cwd}, publishing ${p.ports.join(", ")}; containers: ${p.args.replace(/^docker compose · /, "")}`
+    : `- pid ${p.pid}, listening on ${p.ports.join(", ")}, cwd ${p.cwd}, command: ${p.args}`;
+  return `A local web app is running on this machine and I want to be able to start and stop it later from a launcher.
+${g.procs.length > 1 ? "These all run out of the same repo, likely one app plus its helpers (a dev script, an API, a database, a stand-in service):" : "What's running:"}
+${g.procs.map(line).join("\n")}
 
-Inspect the project (package.json, scripts, README, config, how the port is chosen) without changing anything, and work out:
+Inspect the project (package.json, compose files, Dockerfiles, scripts, README, config, how the port is chosen) without changing anything, and work out:
 - the folder to start it from
-- a single shell command that starts all of it from scratch, with the web UI listening on the port in $PORT. Use the project's own way to pick the port (env var, --port flag, config) and wire $PORT into it. Include needed steps like activating a venv, but no installs.
+- a single shell command that starts all of it from scratch and stays in the foreground, with the web UI listening on the port in $PORT. Use the project's own way to pick the port (env var, --port flag, config) and wire $PORT into it. Include needed steps like activating a venv, but no installs.
+- for Docker Compose: start with \`docker compose up\` in the foreground (no -d), with the same -f/-p/--profile flags the running project uses (the project name above), and add --build if the app's image is built from the repo. If the published port comes from an env var in the compose file, set that var from $PORT; otherwise it is fixed.
+- a stop command if stopping the foreground process isn't enough to stop everything (for Compose, \`docker compose stop\` with the same flags); else null.
 - whether it can listen on any port. If the port is hard-coded and can't be changed without editing files, set fixedPort to it and don't use $PORT.
 - whether it needs to bind 0.0.0.0 to be reachable from another machine, and make the command do that if the project supports it.
 - the URL path to open (usually "/").
 
 Reply with only a JSON object, no prose:
-{"name": "short human name", "folder": "/abs/path", "command": "...", "fixedPort": null, "path": "/", "notes": "one sentence on anything surprising"}`;
+{"name": "short human name", "folder": "/abs/path", "command": "...", "stop": null, "fixedPort": null, "path": "/", "notes": "one sentence on anything surprising"}`;
 }
 
 export async function investigate(p) {
@@ -214,7 +228,7 @@ export async function investigate(p) {
   const json = /\{[\s\S]*\}/.exec(result ?? "")?.[0];
   if (!json) throw new Error(`no setup in the answer: ${String(result).slice(0, 200)}`);
   const s = JSON.parse(json);
-  return { name: s.name ?? p.repo.split("/").pop(), machine: p.machine, folder: s.folder ?? p.cwd, command: s.command ?? "", port: s.fixedPort ?? null, path: s.path ?? "/", notes: s.notes ?? "" };
+  return { name: s.name ?? p.repo.split("/").pop(), machine: p.machine, folder: s.folder ?? p.cwd, command: s.command ?? "", stop: s.stop || null, port: s.fixedPort ?? null, path: s.path ?? "/", notes: s.notes ?? "" };
 }
 
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";

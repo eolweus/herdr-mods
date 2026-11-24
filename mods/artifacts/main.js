@@ -2,7 +2,7 @@ import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, checking, closeOverlay, exec, layout, machines, notify, openOverlay, props, run, setShared, shared, theme } from "herdr";
 import {
-  HTML, LISTEN, capture, freePort, hash, investigate, launch, stopProcs, loadRegistry, openInChrome, parseHtml, parseListeners,
+  HTML, LISTEN, capture, freePort, hash, investigate, launch, runStop, stopProcs, loadRegistry, openInChrome, parseHtml, parseListeners,
   probe, reach, reachable, running, sh, slug, stop, updateRegistry, urlFor,
 } from "./data.js";
 
@@ -129,16 +129,12 @@ export default class Artifacts extends View {
     });
   }
 
-  // Running apps once per run, reachable discovered servers and local HTML when there's no picture yet (or the file changed).
+  // Running apps once per run and local HTML when there's no picture yet (or the file changed).
   autoShots(cx) {
     for (const app of this.registry.apps) {
       const r = this.liveApp(app);
       const key = `app:${app.id}`;
       if (r && this.ready.has(r.address) && !this.shotThisRun.has(key)) this.takeShot(key, () => reach(app.machine, r.port, this.live).then((u) => u + (app.path ?? "/")), cx);
-    }
-    for (const p of Object.values(this.listeners).flat()) {
-      const key = `disc:${p.machine ?? "local"}:${p.port}`;
-      if (p.direct && p.http.length && !this.shot(key) && !this.shotThisRun.has(key)) this.takeShot(key, urlFor(p.machine, p.http[0]), cx);
     }
     for (const h of this.html.local ?? []) {
       const key = `html:${h.id}`;
@@ -169,9 +165,9 @@ export default class Artifacts extends View {
       && !this.live.some((r) => r.machine === g.machine && g.ports.includes(r.port)));
   }
 
-  stopOutside(g, key, cx) {
-    this.busy(key, cx, async () => {
-      await stopProcs(g.machine, g.procs);
+  stopOutside(app, g, cx) {
+    this.busy(app.id, cx, async () => {
+      if (app.stop) await runStop(app, g.port); else await stopProcs(g.machine, g.procs);
       const k = g.machine ?? "local";
       this.listeners[k] = (this.listeners[k] ?? []).filter((x) => x.id !== g.id);
       this.scannedAt = 0;
@@ -201,8 +197,11 @@ export default class Artifacts extends View {
     });
   }
 
-  stopIt(r, key, cx) {
-    this.busy(key, cx, () => stop(r.address));
+  stopIt(r, key, cx, app) {
+    this.busy(key, cx, async () => {
+      if (app?.stop) await runStop(app, r.port).catch(() => null);
+      await stop(r.address);
+    });
   }
 
   open(machine, port, path, key, cx) {
@@ -306,7 +305,7 @@ export default class Artifacts extends View {
   }
 
   // A Plugins-style card: picture on top, then title, switch, description, badges and buttons.
-  card(id, { key, title, sub, description, badges, toggle, buttons, placeholder, retake, dim }, t) {
+  card(id, { key, title, sub, description, badges, toggle, buttons, placeholder, retake, dim, picture: show = true }, t) {
     const path = key ? this.shot(key) : null;
     const taking = key && shooting.has(key);
     const picture = div().h(168).w_full().flex_none().bg(t.background).border_b_1().border_color(t.border).overflow_hidden()
@@ -317,7 +316,7 @@ export default class Artifacts extends View {
         : div().text_size(32).font_semibold().text_color(t.border).child((title || "?").slice(0, 1).toUpperCase()));
     return v_flex().id(`card-${id}`).w(300).flex_none().rounded(12).bg(t.surface).border_1().border_color(t.border).overflow_hidden()
       .when(Boolean(dim), (el) => el.opacity(0.7))
-      .child(picture)
+      .when(show, (el) => el.child(picture))
       .child(v_flex().gap(6).p(14)
         .child(h_flex().gap(8).items_center()
           .child(v_flex().flex_1().min_w(0)
@@ -352,7 +351,7 @@ export default class Artifacts extends View {
     const busy = this.pending.has(app.id);
     const ready = r && this.ready.has(r.address);
     const deleting = this.armed === `del:${app.id}`;
-    const key = ext ? `disc:${app.machine ?? "local"}:${ext.port}` : `app:${app.id}`;
+    const key = `app:${app.id}`;
     const port = r?.port ?? ext?.http[0];
     const badges = [
       r ? this.badge(ready ? `running · ${app.machine ?? "localhost"}:${r.port}` : `starting on port ${r.port}…`, t, ready ? t.done : t.working)
@@ -367,9 +366,9 @@ export default class Artifacts extends View {
         ? this.button(`del-${app.id}`, "x", "Remove?", (cx) => this.remove("apps", app.id, cx), t, "danger")
         : this.button(`del-${app.id}`, "x", null, (cx) => { this.armed = `del:${app.id}`; cx.notify(); }, t),
     ].filter(Boolean);
-    const what = ext?.procs.map((p) => (p.docker ? `docker compose -p ${p.docker} stop` : `kill ${p.pid}`)).join(", ");
+    const what = app.stop || ext?.procs.map((p) => (p.docker ? `docker compose -p ${p.docker} stop` : `kill ${p.pid}`)).join(", ");
     const tip = r ? "Stop it" : ext ? `Stop it (${what})` : "Start it";
-    const flip = (cx) => (r ? this.stopIt(r, app.id, cx) : ext ? this.stopOutside(ext, app.id, cx) : this.start(app, cx));
+    const flip = (cx) => (r ? this.stopIt(r, app.id, cx, app) : ext ? this.stopOutside(app, ext, cx) : this.start(app, cx));
     return this.card(`app-${app.id}`, {
       key, title: app.name, sub: this.subline(app.machine ?? null, tilde(app.folder), t),
       description: app.notes || app.command, badges, buttons,
@@ -381,7 +380,6 @@ export default class Artifacts extends View {
 
   discoverCard(p, t) {
     const looking = this.investigating.has(p.id);
-    const key = `disc:${p.machine ?? "local"}:${p.port}`;
     const badges = [
       p.machine && p.http.length > 0 && !p.direct && this.badge(`only on ${p.machine}: opens through ssh`, t),
     ].filter(Boolean);
@@ -390,10 +388,9 @@ export default class Artifacts extends View {
       this.button(`dsave-${p.id}`, looking ? "spinner" : "sparkle", looking ? "Working it out…" : "Save as app", (cx) => { if (!looking) this.save(p, cx); }, t, "accent"),
     ].filter(Boolean);
     return this.card(`disc-${p.id}`, {
-      key, title: p.repo.split("/").pop(), sub: this.subline(p.machine, tilde(p.repo), t),
+      title: p.repo.split("/").pop(), sub: this.subline(p.machine, tilde(p.repo), t),
       description: v_flex().gap(4).children(p.procs.map((x) => this.procRow(p, x, t))), badges, buttons,
-      retake: p.http.length > 0 ? (cx) => this.takeShot(key, () => reach(p.machine, p.http[0], this.live), cx) : null,
-      placeholder: p.http.length ? null : "server",
+      picture: false,
     }, t);
   }
 
@@ -443,8 +440,11 @@ export default class Artifacts extends View {
 
   body(t) {
     if (this.tab === "discover") {
-      const list = this.unsaved().sort((a, b) => (b.http.length > 0) - (a.http.length > 0));
-      return this.gallery(null, null, list.map((p) => this.discoverCard(p, t)), t, "Nothing new is listening on your machines. Saved apps are under Apps.");
+      const list = this.unsaved();
+      const cards = (likely) => list.filter((p) => p.likely === likely).sort((a, b) => b.http.length - a.http.length).map((p) => this.discoverCard(p, t));
+      return v_flex().gap(28)
+        .child(this.gallery("Likely apps", "serve a web page", cards(true), t, "Nothing new serving a web page. Saved apps are under Apps."))
+        .child(this.gallery("Less certain", "APIs, databases and other servers without a page at /", cards(false), t, "Nothing else is listening."));
     }
     if (this.tab === "artifacts") {
       const html = Object.values(this.html).flat().sort((a, b) => b.mtime - a.mtime);
@@ -506,7 +506,7 @@ export default class Artifacts extends View {
     this.fields = Object.fromEntries(p.edit === "link"
       ? [field("name", item.name, "My artifact"), field("url", item.url, "https://claude.ai/artifact/…")]
       : [field("name", item.name, "My app"), field("folder", item.folder, "/path/to/project"),
-        field("command", item.command, "npm run dev -- --port $PORT"), field("port", item.port, "any free port"), field("path", item.path ?? "/", "/")]);
+        field("command", item.command, "npm run dev -- --port $PORT"), field("stop", item.stop, "optional, e.g. docker compose stop"), field("port", item.port, "any free port"), field("path", item.path ?? "/", "/")]);
     this.fields.name.focus();
     cx.timer.after(300, () => this.fields.name.focus());
     this.handle = cx.focus_handle();
@@ -547,7 +547,7 @@ export default class Artifacts extends View {
           const entry = link
             ? { id, name, url: this.value("url") }
             : { id, name, machine: this.machine, folder: this.value("folder"), command: this.value("command"),
-              port: port ? Number(port) : null, path: this.value("path") || "/", ...(this.item.notes ? { notes: this.item.notes } : {}) };
+              ...(this.value("stop") ? { stop: this.value("stop") } : {}), port: port ? Number(port) : null, path: this.value("path") || "/", ...(this.item.notes ? { notes: this.item.notes } : {}) };
           const at = list.findIndex((x) => x.id === id);
           if (at >= 0) list[at] = entry; else list.push(entry);
         });
@@ -596,6 +596,7 @@ export default class Artifacts extends View {
         .child(labelled("Folder", h_flex().gap(6).child(input("folder").flex_1())
           .child(button("pick", "Pick…", false, () => this.pickFolder()))))
         .child(labelled("Start command", input("command"), "Runs in the machine's login shell from the folder. $PORT holds the port."))
+        .child(labelled("Stop command", input("stop"), "Runs before the start command's terminal is closed. Needed when that doesn't stop everything (docker compose)."))
         .child(h_flex().gap(10).items_start()
           .child(labelled("Port", input("port"), "Empty: a free port each time").w(200))
           .child(labelled("Open at", input("path")).flex_1())))
