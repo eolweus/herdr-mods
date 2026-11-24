@@ -2,7 +2,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { focused, layout, run, theme } from "herdr";
 
-const VIEWS = [["machines-view", "Machines", "server"], ["scheduler-view", "Scheduler", "clock"], ["plugins-view", "Plugins", "puzzle"]];
+const VIEWS = [["machines-view", "Machines", "server"], ["scheduler-view", "Scheduler", "clock"], ["artifacts-view", "Artifacts", "layers"], ["plugins-view", "Plugins", "puzzle"]];
 
 function find(node, id) {
   if (node?.id === id) return node;
