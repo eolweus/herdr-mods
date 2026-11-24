@@ -15,15 +15,18 @@ fi | sort -u | while IFS="$(printf '\\t')" read -r port pid; do
   repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
   printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "$pid" "$cwd" "$args" "\${code:-000}" "$repo"
 done
-# Compose containers' published ports belong to root's docker-proxy, so ask docker; their "pid" is docker:<project>.
-command -v docker >/dev/null 2>&1 && docker ps --format '{{.Label "com.docker.compose.project"}}\\t{{.Label "com.docker.compose.project.working_dir"}}\\t{{.Names}}\\t{{.Image}}\\t{{.Ports}}' 2>/dev/null |
-while IFS="$(printf '\\t')" read -r proj dir name image ports; do
+# Every running compose container, by project (from its labels); port is "-" when it publishes none, pid is docker:<project>.
+command -v docker >/dev/null 2>&1 && docker ps --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Label "com.docker.compose.service"}}|{{.Image}}|{{.Ports}}' 2>/dev/null |
+while IFS='|' read -r proj dir svc image ports; do
   [ -n "$proj" ] && [ -n "$dir" ] || continue
   repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
-  echo "$ports" | tr ',' '\\n' | sed -n 's/.*:\\([0-9][0-9]*\\)->.*/\\1/p' | sort -u | while read -r port; do
+  found=
+  for port in $(echo "$ports" | tr ',' '\\n' | sed -n 's/.*:\\([0-9][0-9]*\\)->.*/\\1/p' | sort -u); do
     code=$(curl -s -m 1 -o /dev/null -w '%{http_code}|%{content_type}' "http://127.0.0.1:$port/" 2>/dev/null)
-    printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "docker:$proj" "$dir" "docker compose · $name ($image)" "\${code:-000}" "$repo"
+    printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "docker:$proj" "$dir" "$svc $image" "\${code:-000}" "$repo"
+    found=1
   done
+  [ -n "$found" ] || printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "-" "docker:$proj" "$dir" "$svc $image" "000" "$repo"
 done
 true
 `;
@@ -55,15 +58,21 @@ export function parseListeners(stdout, machine) {
     const [port, pid, cwd, args, code, repo] = line.split("\t");
     if (!port || !cwd || !/^\/(Users|home)\//.test(cwd) || NOISE.test(args ?? "") || OWN.test(cwd)) continue;
     const docker = pid.startsWith("docker:") ? pid.slice(7) : null;
-    const p = byPid.get(pid) ?? { pid, docker, cwd, repo: repo || cwd, args: (args ?? "").trim(), ports: [], http: [], pages: [] };
-    if (docker && !p.args.includes(args.trim())) p.args += `, ${args.trim().replace(/^docker compose · /, "")}`;
+    const p = byPid.get(pid) ?? { pid, docker, cwd, repo: repo || cwd, args: docker ? `docker compose -p ${docker}` : (args ?? "").trim(), ports: [], http: [], pages: [], services: [] };
+    byPid.set(pid, p);
     const n = Number(port);
+    if (docker) {
+      const [name, image] = (args ?? "").trim().split(" ");
+      const svc = p.services.find((x) => x.name === name) ?? (p.services.push({ name, image, ports: [] }), p.services.at(-1));
+      if (port !== "-" && !svc.ports.includes(n)) svc.ports.push(n);
+    }
+    if (port === "-") continue;
     const [status, type] = (code ?? "000").split("|");
     if (!p.ports.includes(n)) p.ports.push(n);
     if (status !== "000" && !p.http.includes(n)) p.http.push(n);
     if (/^[23]/.test(status) && /html/.test(type ?? "") && !p.pages.includes(n)) p.pages.push(n);
-    byPid.set(pid, p);
   }
+  for (const [pid, p] of byPid) if (!p.ports.length) byPid.delete(pid);
   const byRepo = new Map();
   for (const p of byPid.values()) {
     const g = byRepo.get(p.repo) ?? { machine, repo: p.repo, cwd: p.repo, procs: [] };
@@ -201,7 +210,7 @@ export async function updateRegistry(change) {
 
 export function setupPrompt(g) {
   const line = (p) => p.docker
-    ? `- docker compose project "${p.docker}" started from ${p.cwd}, publishing ${p.ports.join(", ")}; containers: ${p.args.replace(/^docker compose · /, "")}`
+    ? `- docker compose project "${p.docker}" started from ${p.cwd}, publishing ${p.ports.join(", ")}; services: ${p.services.map((x) => `${x.name} (${x.image}${x.ports.length ? `, port ${x.ports.join(", ")}` : ""})`).join(", ")}`
     : `- pid ${p.pid}, listening on ${p.ports.join(", ")}, cwd ${p.cwd}, command: ${p.args}`;
   return `A local web app is running on this machine and I want to be able to start and stop it later from a launcher.
 ${g.procs.length > 1 ? "These all run out of the same repo, likely one app plus its helpers (a dev script, an API, a database, a stand-in service):" : "What's running:"}

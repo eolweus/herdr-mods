@@ -11,6 +11,7 @@ const SCAN_MS = 60000;
 const ICON = (name) => `mods/artifacts/${name}.svg`;
 // Module state is shared by every copy of the page, so two copies never shoot the same thing at once.
 const shooting = new Set();
+const stopWhat = (g) => g.procs.map((p) => (p.docker ? `docker compose -p ${p.docker} stop` : `kill ${p.pid}`)).join(", ");
 const shots = () => shared("artifacts.shots") ?? {};
 
 function find(node, id) {
@@ -166,8 +167,8 @@ export default class Artifacts extends View {
   }
 
   stopOutside(app, g, cx) {
-    this.busy(app.id, cx, async () => {
-      if (app.stop) await runStop(app, g.port); else await stopProcs(g.machine, g.procs);
+    this.busy(app?.id ?? g.id, cx, async () => {
+      if (app?.stop) await runStop(app, g.port); else await stopProcs(g.machine, g.procs);
       const k = g.machine ?? "local";
       this.listeners[k] = (this.listeners[k] ?? []).filter((x) => x.id !== g.id);
       this.scannedAt = 0;
@@ -366,7 +367,7 @@ export default class Artifacts extends View {
         ? this.button(`del-${app.id}`, "x", "Remove?", (cx) => this.remove("apps", app.id, cx), t, "danger")
         : this.button(`del-${app.id}`, "x", null, (cx) => { this.armed = `del:${app.id}`; cx.notify(); }, t),
     ].filter(Boolean);
-    const what = app.stop || ext?.procs.map((p) => (p.docker ? `docker compose -p ${p.docker} stop` : `kill ${p.pid}`)).join(", ");
+    const what = app.stop || (ext && stopWhat(ext));
     const tip = r ? "Stop it" : ext ? `Stop it (${what})` : "Start it";
     const flip = (cx) => (r ? this.stopIt(r, app.id, cx, app) : ext ? this.stopOutside(app, ext, cx) : this.start(app, cx));
     return this.card(`app-${app.id}`, {
@@ -388,6 +389,7 @@ export default class Artifacts extends View {
       this.button(`dsave-${p.id}`, looking ? "spinner" : "sparkle", looking ? "Working it out…" : "Save as app", (cx) => { if (!looking) this.save(p, cx); }, t, "accent"),
     ].filter(Boolean);
     return this.card(`disc-${p.id}`, {
+      toggle: this.toggle(p.id, true, this.pending.has(p.id), `Stop it (${stopWhat(p)})`, (cx) => this.stopOutside(null, p, cx), t),
       title: p.repo.split("/").pop(), sub: this.subline(p.machine, tilde(p.repo), t),
       description: v_flex().gap(4).children(p.procs.map((x) => this.procRow(p, x, t))), badges, buttons,
       picture: false,
@@ -396,15 +398,23 @@ export default class Artifacts extends View {
 
   // A process in a discovered repo: where it runs, its command, and its ports (http ones open on click).
   procRow(g, x, t) {
+    const chip = (port) => x.http.includes(port)
+      ? div().id(`port-${g.id}-${port}`).px(6).py(1).rounded(5).cursor_pointer().bg(t.background).border_1().border_color(t.border)
+        .text_size(10.5).text_color(t.accent).hover((s) => s.bg(t.hover)).tooltip(`Open port ${port}`)
+        .on_click((_e, cx) => this.open(g.machine, port, "/", `${g.id}:${port}`, cx)).child(`:${port}`)
+      : this.badge(`:${port} · not http`, t);
     const where = x.cwd === g.repo ? "" : `${x.cwd.slice(g.repo.length + 1)}  `;
+    if (x.docker) return v_flex().gap(3).min_w(0)
+      .child(div().text_size(11).text_color(t.muted).truncate().child(`${where}docker compose · ${x.docker}`))
+      .children(x.services.map((svc) => h_flex().gap(5).items_center().min_w(0).pl(8)
+        .child(div().text_size(11).text_color(t.foreground).flex_none().child(svc.name))
+        .child(div().text_size(10.5).text_color(t.dim).truncate().flex_1().child(svc.image))
+        .children(svc.ports.map(chip))));
     return v_flex().gap(3).min_w(0)
       .child(div().text_size(11).text_color(t.muted).truncate().child(`${where}${x.args}`))
-      .child(h_flex().gap(4).flex_wrap().children(x.ports.map((port) => x.http.includes(port)
-        ? div().id(`port-${g.id}-${port}`).px(6).py(1).rounded(5).cursor_pointer().bg(t.background).border_1().border_color(t.border)
-          .text_size(10.5).text_color(t.accent).hover((s) => s.bg(t.hover)).tooltip(`Open port ${port}`)
-          .on_click((_e, cx) => this.open(g.machine, port, "/", `${g.id}:${port}`, cx)).child(`:${port}`)
-        : this.badge(`:${port} · not http`, t))));
+      .child(h_flex().gap(4).flex_wrap().children(x.ports.map(chip)));
   }
+
 
   htmlCard(item, t) {
     const r = item.machine ? this.liveHtml(item) : null;
