@@ -10,9 +10,12 @@ export class FileTab {
   constructor(p, cx) {
     this.path = p.path;
     this.on = p.machine ?? null;
-    this.preview = new Preview(this.path, this.on, cx);
+    this.line = p.line ?? null;
+    this.preview = new Preview(this.path, this.on, cx, this.line);
     // A mod pane isn't told its id; a new tab is focused, so the focused unclaimed files-work pane is this one.
     cx.timer.every(300, () => {
+      // Focusing the editor scrolls the selected line into view.
+      if (this.preview.jump && this.preview.code) { this.preview.jump = false; this.preview.code.focus(); }
       if (this.pane && panes().some((x) => x.pane === this.pane)) return;
       const f = panes().find((x) => x.focused && x.mod === "files-work" && !claimed.has(x.pane));
       if (!f) return;
@@ -34,8 +37,8 @@ export class FileTab {
     const space = spaces().find((s) => s.tabs.some((t) => t.id === me.tab));
     const there = space?.machine ?? null;
     let argv;
-    if (there === this.on) argv = ["sh", "-c", 'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; cd "${1%/*}" 2>/dev/null; exec "${EDITOR:-nvim}" "$1"', "sh", this.path];
-    else if (this.on && !there) argv = ["ssh", "-t", this.on, `cd ${quote(this.path.replace(/\/[^/]*$/, "") || "/")} 2>/dev/null; exec "\${EDITOR:-nvim}" ${quote(this.path)}`];
+    if (there === this.on) argv = ["sh", "-c", 'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; cd "$1" 2>/dev/null; shift; exec "${EDITOR:-nvim}" "$@"', "sh", this.path.replace(/\/[^/]*$/, "") || "/", ...(this.line ? [`+${this.line}`] : []), this.path];
+    else if (this.on && !there) argv = ["ssh", "-t", this.on, `cd ${quote(this.path.replace(/\/[^/]*$/, "") || "/")} 2>/dev/null; exec "\${EDITOR:-nvim}" ${this.line ? `+${this.line} ` : ""}${quote(this.path)}`];
     else return notify({ title: "Can't open nvim here", body: `This tab is on ${there}, the file on ${this.on ?? "this computer"}`, level: "error" });
     const mine = panes().filter((x) => x.tab === me.tab);
     if (mine.length === 1) {
@@ -58,7 +61,7 @@ export class FileTab {
     return v_flex().id("file-tab").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .child(h_flex().h(40).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
         .child(svg("mods/files-work/file.svg").size(14).flex_none().text_color(t.muted))
-        .child(div().flex_none().font_semibold().child(name))
+        .child(div().flex_none().font_semibold().child(this.line ? `${name}:${this.line}` : name))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(`${this.on ? `${this.on}:` : ""}${dir}`))
         .when(p.kind === "pdf" && Boolean(p.pages?.length), (el) => el
           .child(button("zoom-out", "−", "Zoom out", (_e, cx) => { p.zoom = Math.max(0.25, p.zoom / 1.25); cx.notify(); }))

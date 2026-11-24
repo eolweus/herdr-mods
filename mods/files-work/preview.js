@@ -22,8 +22,9 @@ export function pruneCache() {
 }
 
 export class Preview {
-  constructor(path, on, cx) {
+  constructor(path, on, cx, line = null) {
     this.path = path;
+    this.line = line;
     this.on = on ?? null;
     const ext = extOf(path);
     this.kind = IMAGE.has(ext) ? "image" : ext === "pdf" ? "pdf" : "text";
@@ -61,6 +62,12 @@ export class Preview {
     this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
       value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
       syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6 } });
+    if (this.line > 1) {
+      const lines = text.split("\n").slice(0, this.line);
+      const start = lines.slice(0, -1).join("\n").length + 1;
+      this.code.set_selected_range({ start, end: start + (lines[lines.length - 1]?.length ?? 0) });
+      this.jump = true;
+    }
   }
 
   async cached() {
