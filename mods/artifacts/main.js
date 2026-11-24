@@ -11,7 +11,7 @@ const SCAN_MS = 60000;
 const ICON = (name) => `mods/artifacts/${name}.svg`;
 // Module state is shared by every copy of the page, so two copies never shoot the same thing at once.
 const shooting = new Set();
-const stopWhat = (g) => g.procs.map((p) => (p.docker ? `docker compose -p ${p.docker} stop` : `kill ${p.pid}`)).join(", ");
+const stopWhat = (g) => [...new Set(g.procs.map((p) => (p.docker ? `docker compose -p ${p.docker} stop` : p.unit ? `systemctl --user stop ${p.unit}` : `kill ${p.pid}`)))].join(", ");
 // Bump to retake every stored shot with a better capture.
 const SHOT_V = 3;
 const shots = () => shared("artifacts.shots") ?? {};
@@ -416,7 +416,7 @@ export default class Artifacts extends View {
         .child(div().text_size(10.5).text_color(t.dim).truncate().flex_1().child(svc.image))
         .children(svc.ports.map(chip))));
     return v_flex().gap(3).min_w(0)
-      .child(div().text_size(11).text_color(t.muted).truncate().child(`${where}${x.args}`))
+      .child(div().text_size(11).text_color(t.muted).truncate().child(`${where}${x.unit ? `systemd ${x.unit} · ` : ""}${x.args}`))
       .child(h_flex().gap(4).flex_wrap().children(x.ports.map(chip)));
   }
 

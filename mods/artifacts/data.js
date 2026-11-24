@@ -13,7 +13,9 @@ fi | sort -u | while IFS="$(printf '\\t')" read -r port pid; do
   else cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'); args=$(ps -o args= -p "$pid"); fi
   code=$(curl -s -m 1 -o /dev/null -w '%{http_code}|%{content_type}' "http://127.0.0.1:$port/" 2>/dev/null)
   repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
-  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "$pid" "$cwd" "$args" "\${code:-000}" "$repo"
+  unit=$(sed -n 's|^0::/user.slice/.*/\\([^/]*\\.service\\)$|\\1|p' "/proc/$pid/cgroup" 2>/dev/null)
+  case "$unit" in app-*|*@*) unit= ;; esac
+  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "$pid" "$cwd" "$args" "\${code:-000}" "$repo" "$unit"
 done
 # Every running compose container, by project (from its labels); port is "-" when it publishes none, pid is docker:<project>.
 command -v docker >/dev/null 2>&1 && docker ps --format '{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.project.working_dir"}}|{{.Label "com.docker.compose.service"}}|{{.Image}}|{{.Ports}}' 2>/dev/null |
@@ -55,10 +57,10 @@ const OWN = /\/herdr-chat\/engine$/;
 export function parseListeners(stdout, machine) {
   const byPid = new Map();
   for (const line of stdout.split("\n")) {
-    const [port, pid, cwd, args, code, repo] = line.split("\t");
+    const [port, pid, cwd, args, code, repo, unit] = line.split("\t");
     if (!port || !cwd || !/^\/(Users|home)\//.test(cwd) || NOISE.test(args ?? "") || OWN.test(cwd)) continue;
     const docker = pid.startsWith("docker:") ? pid.slice(7) : null;
-    const p = byPid.get(pid) ?? { pid, docker, cwd, repo: repo || cwd, args: docker ? `docker compose -p ${docker}` : (args ?? "").trim(), ports: [], http: [], pages: [], services: [] };
+    const p = byPid.get(pid) ?? { pid, docker, cwd, repo: repo || cwd, args: docker ? `docker compose -p ${docker}` : (args ?? "").trim(), ports: [], http: [], pages: [], services: [], unit: unit || null };
     byPid.set(pid, p);
     const n = Number(port);
     if (docker) {
@@ -155,9 +157,11 @@ export async function stop(address) {
   await hc(["rm", address]).catch(() => null);
 }
 
-// Real processes get a kill; compose projects (pid docker:<project>) get docker compose stop.
+// systemd user services get systemctl --user stop (a kill would just be restarted); other processes get a kill; compose projects (pid docker:<project>) get docker compose stop.
 export async function stopProcs(machine, procs) {
-  const pids = procs.filter((p) => !p.docker).map((p) => p.pid);
+  const units = [...new Set(procs.filter((p) => p.unit).map((p) => p.unit))];
+  if (units.length) await sh('systemctl --user stop "$@"', units, machine);
+  const pids = procs.filter((p) => !p.docker && !p.unit).map((p) => p.pid);
   if (pids.length) await sh('kill "$@"', pids, machine);
   for (const p of procs.filter((p) => p.docker)) await sh('docker compose -p "$1" stop', [p.docker], machine, 120000);
 }
