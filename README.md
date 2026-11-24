@@ -53,7 +53,7 @@ Some mods need other tools:
 
 ### Changes panel toggle
 
-`mods/panel-changes`. Cmd+E toggles the Changes panel beside the work area: the git diff of the focused folder, with a commit box.
+`mods/panel-changes`. Cmd+E shows or hides the side panel, opening whichever of Changes, Files or Claude was shown last (Changes the first time): the git diff of the focused folder, with a commit box.
 
 <img src="mods/panel-changes/screenshot.png" width="600" alt="Changes panel toggle">
 
