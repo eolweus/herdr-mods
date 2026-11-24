@@ -267,19 +267,27 @@ export default class Spaces extends View {
   }
 
   // Each handoff goes under the agent row or handoff that sent it; the rest are orphans, listed on their own.
+  // Split by machine, one sent from another machine heads its own machine's section instead.
   handoffTree() {
     const ps = panes();
     const shown = new Set([...this.agentsBySpace.values()].flat().map((a) => a.pane));
     const under = new Map();
     const orphans = [];
+    const roots = new Map();
     for (const h of this.hlist) {
       const up = this.handoffs.parent(h, ps);
       const at = up?.handoff ? `h:${up.handoff.machine ?? ""}/${up.handoff.key}` : up?.pane && shown.has(up.pane) ? `p:${up.pane}` : null;
+      const m = h.machine ?? null;
+      if (this.sort === "machine" && (!at || this.handoffs.machineOf(String(h.from ?? "").split("/")[0]) !== m)) {
+        if (!roots.has(m)) roots.set(m, []);
+        roots.get(m).push(h);
+        continue;
+      }
       if (!at) { orphans.push(h); continue; }
       if (!under.has(at)) under.set(at, []);
       under.get(at).push(h);
     }
-    return { under, orphans, ps };
+    return { under, orphans, roots, ps };
   }
 
   handoffRows(at, depth, t, from) {
@@ -339,8 +347,13 @@ export default class Spaces extends View {
       .child(end);
   }
 
+  rootRows(list, t) {
+    return list.flatMap((h) => [this.handoffRow(h, -1, t, null), ...this.handoffRows(`h:${h.machine ?? ""}/${h.key}`, 0, t, null)]);
+  }
+
   orphanBlock(t) {
-    const rows = this.htree.orphans.flatMap((h) => [this.handoffRow(h, -1, t, null), ...this.handoffRows(`h:${h.machine ?? ""}/${h.key}`, 0, t, null)]);
+    const left = this.rootsDrawn ? [] : [...this.htree.roots.values()].flat();
+    const rows = this.rootRows([...this.htree.orphans, ...left], t);
     if (!rows.length) return null;
     return v_flex().flex_none().gap(1).mb(6)
       .child(h_flex().h(26).px(8).gap(6).items_center().text_size(11.5).font_medium().text_color(HANDOFF).child("⤷").child("Handoffs"))
@@ -548,6 +561,7 @@ export default class Spaces extends View {
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
     const loadingRow = m => h_flex().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(collapsed ? 0 : 8).items_center().when(collapsed, el => el.justify_center()).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
+    this.rootsDrawn = !collapsed && remote.length > 0 && this.sort === "machine";
     if (!remote.length || this.sort === "project") {
       if (loading(null) && !rows.length) return [loadingRow(null)];
       const sec = this.sectioned(rows, draw, collapsed, t);
@@ -610,8 +624,9 @@ export default class Spaces extends View {
             .on_click((_e, cx) => { cx.stop_propagation(); cx.write_to_clipboard(login); this.copiedLogin = login; cx.notify(); })
             .child(this.copiedLogin === login ? "Copied" : "Copy")))] : [];
       const sec = folded || !mine.length ? { items: [], activeAt: -1 } : this.sectioned(mine, draw, collapsed, t);
-      const items = [cell(head), ...guidance, ...(folded ? [] : mine.length ? sec.items : [loading(m) ? loadingRow(m) : cell(empty)])];
-      if (sec.activeAt >= 0) this.activeAt = before + 1 + guidance.length + sec.activeAt;
+      const handed = folded || collapsed ? [] : this.rootRows(this.htree.roots.get(m) ?? [], t);
+      const items = [cell(head), ...guidance, ...handed, ...(folded ? [] : mine.length ? sec.items : [loading(m) ? loadingRow(m) : cell(empty)])];
+      if (sec.activeAt >= 0) this.activeAt = before + 1 + guidance.length + handed.length + sec.activeAt;
       before += items.length;
       return items;
     });
