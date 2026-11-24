@@ -2,7 +2,7 @@ import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, checking, closeOverlay, exec, layout, machines, notify, openOverlay, props, run, setShared, shared, theme } from "herdr";
 import {
-  HTML, LISTEN, capture, freePort, hash, investigate, launch, loadRegistry, openInChrome, parseHtml, parseListeners,
+  HTML, LISTEN, capture, freePort, hash, investigate, killPids, launch, loadRegistry, openInChrome, parseHtml, parseListeners,
   probe, reach, reachable, running, sh, slug, stop, updateRegistry, urlFor,
 } from "./data.js";
 
@@ -150,6 +150,24 @@ export default class Artifacts extends View {
 
   liveApp(app) {
     return this.live.find((r) => r.kind === "app" && r.id === app.id && r.machine === (app.machine ?? null));
+  }
+
+  // A discovered server running out of the app's folder that Herdr didn't start.
+  outside(app) {
+    const f = app.folder;
+    const within = (a, b) => a === b || a.startsWith(`${b}/`);
+    return (this.listeners[app.machine ?? "local"] ?? []).find((g) =>
+      (within(f, g.repo) && g.procs.some((p) => within(p.cwd, f) || within(f, p.cwd)))
+      && !this.live.some((r) => r.machine === (app.machine ?? null) && g.ports.includes(r.port)));
+  }
+
+  stopOutside(g, key, cx) {
+    this.busy(key, cx, async () => {
+      await killPids(g.machine, g.procs.map((p) => p.pid));
+      const k = g.machine ?? "local";
+      this.listeners[k] = (this.listeners[k] ?? []).filter((x) => x.id !== g.id);
+      this.scannedAt = 0;
+    });
   }
 
   liveHtml(item) {
@@ -322,28 +340,33 @@ export default class Artifacts extends View {
 
   appCard(app, t) {
     const r = this.liveApp(app);
+    const ext = r ? null : this.outside(app);
     const busy = this.pending.has(app.id);
     const ready = r && this.ready.has(r.address);
     const deleting = this.armed === `del:${app.id}`;
-    const key = `app:${app.id}`;
+    const key = ext ? `disc:${app.machine ?? "local"}:${ext.port}` : `app:${app.id}`;
+    const port = r?.port ?? ext?.http[0];
     const badges = [
       r ? this.badge(ready ? `running · ${app.machine ?? "localhost"}:${r.port}` : `starting on port ${r.port}…`, t, ready ? t.done : t.working)
+        : ext ? this.badge(`running outside Herdr · ${app.machine ?? "localhost"}:${ext.ports.join(", ")}`, t, t.done)
         : this.badge(app.port ? `port ${app.port}` : "any free port", t),
     ];
     const buttons = [
-      r && this.button(`open-${app.id}`, "external", "Open", (cx) => this.open(app.machine, r.port, app.path, app.id, cx), t, "accent"),
+      port && this.button(`open-${app.id}`, "external", "Open", (cx) => this.open(app.machine, port, app.path, app.id, cx), t, "accent"),
       r && this.button(`logs-${app.id}`, "logs", "Logs", () => run("terminal.peek", { terminal: r.address }), t),
       this.button(`edit-${app.id}`, "pencil", "Edit", () => this.edit("app", app), t),
       deleting
         ? this.button(`del-${app.id}`, "x", "Remove?", (cx) => this.remove("apps", app.id, cx), t, "danger")
         : this.button(`del-${app.id}`, "x", null, (cx) => { this.armed = `del:${app.id}`; cx.notify(); }, t),
     ].filter(Boolean);
+    const tip = r ? "Stop it" : ext ? `Stop it (kills pid ${ext.procs.map((p) => p.pid).join(", ")})` : "Start it";
+    const flip = (cx) => (r ? this.stopIt(r, app.id, cx) : ext ? this.stopOutside(ext, app.id, cx) : this.start(app, cx));
     return this.card(`app-${app.id}`, {
       key, title: app.name, sub: this.subline(app.machine ?? null, tilde(app.folder), t),
       description: app.notes || app.command, badges, buttons,
-      toggle: this.toggle(app.id, Boolean(r), busy, r ? "Stop it" : "Start it", (cx) => (r ? this.stopIt(r, app.id, cx) : this.start(app, cx)), t),
-      retake: ready ? (cx) => this.takeShot(key, () => reach(app.machine, r.port, this.live).then((u) => u + (app.path ?? "/")), cx) : null,
-      dim: !r,
+      toggle: this.toggle(app.id, Boolean(r || ext), busy, tip, flip, t),
+      retake: ready || ext?.http.length ? (cx) => this.takeShot(key, () => reach(app.machine, port, this.live).then((u) => u + (app.path ?? "/")), cx) : null,
+      dim: !r && !ext,
     }, t);
   }
 

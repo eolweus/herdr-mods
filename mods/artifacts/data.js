@@ -57,7 +57,7 @@ export function parseListeners(stdout, machine) {
   return [...byRepo.values()].map((g) => {
     g.procs.sort((a, b) => (b.http.length > 0) - (a.http.length > 0) || a.cwd.length - b.cwd.length);
     const ports = g.procs.flatMap((p) => p.ports).sort((a, b) => a - b);
-    const http = g.procs.flatMap((p) => p.http);
+    const http = g.procs.flatMap((p) => p.http).sort((a, b) => a - b);
     return { ...g, id: `${machine ?? "local"}:${g.repo}`, ports, http, port: http[0] ?? ports[0] };
   });
 }
@@ -122,6 +122,8 @@ export async function stop(address) {
   await hc(["kill", address]);
   await hc(["rm", address]).catch(() => null);
 }
+
+export const killPids = (machine, pids) => sh('kill "$@"', pids, machine);
 
 export const urlFor = (machine, port, path = "/") => `http://${machine ?? "localhost"}:${port}${path.startsWith("/") ? path : `/${path}`}`;
 export const openInChrome = (target) => exec("open", ["-a", "Google Chrome", target]);
