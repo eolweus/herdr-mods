@@ -91,7 +91,7 @@ export default class Tabs extends View {
     localStorage.setItem("panels", JSON.stringify(this.panels));
   }
 
-  // The focused pane's border takes the space's machine color. layout.set saves the layout file,
+  // The focused pane's border takes its machine's color. layout.set saves the layout file,
   // so it's put back to "accent" on uncolored machines and the file only differs while one is shown.
   async syncBorder(color) {
     const want = color ?? "accent";
@@ -194,7 +194,9 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14)).child(label);
     };
-    const mc = (shared("machine.colors") ?? {})[space?.machine ?? "local"];
+    const chatInfo = focused()?.pane ? shared(`herdr-chat:info:${focused().pane}`) : null;
+    const machine = chatInfo ? chatInfo.machine ?? null : space?.machine;
+    const mc = (shared("machine.colors") ?? {})[machine ?? "local"];
     if (space) this.syncBorder(mc);
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(mc ? 2 : 1).border_color(mc ?? t.border)
       .on_mouse_up("left", () => { this.pressed = null; })

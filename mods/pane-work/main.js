@@ -69,7 +69,9 @@ export default class Pane extends View {
     const session = chat ? chat.title : p.program?.agent && p.title && p.title !== p.program.name ? p.title.replace(/^[^\p{L}\p{N}]+/u, "") : null;
     const pane = p.pane;
     const bottom = paneFrame(layout())?.header?.position === "bottom";
-    const machine = pane.includes("/") ? pane.split("/")[0] : null;
+    // A handoff's chat opens in the sender's space but runs on its own machine.
+    const info = chat && shared(`herdr-chat:info:${pane}`);
+    const machine = info ? info.machine ?? null : pane.includes("/") ? pane.split("/")[0] : null;
     const mc = (shared("machine.colors") ?? {})[machine ?? "local"];
     return h_flex()
       .id(`pane-head-${pane}`)
