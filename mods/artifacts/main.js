@@ -161,6 +161,14 @@ export default class Artifacts extends View {
       && !this.live.some((r) => r.machine === (app.machine ?? null) && g.ports.includes(r.port)));
   }
 
+  // Discovered servers that aren't a saved app or one Herdr started.
+  unsaved() {
+    const within = (a, b) => a === b || a?.startsWith(`${b}/`);
+    return Object.values(this.listeners).flat().filter((g) =>
+      !this.registry.apps.some((a) => (a.machine ?? null) === g.machine && within(a.folder, g.repo))
+      && !this.live.some((r) => r.machine === g.machine && g.ports.includes(r.port)));
+  }
+
   stopOutside(g, key, cx) {
     this.busy(key, cx, async () => {
       await killPids(g.machine, g.procs.map((p) => p.pid));
@@ -286,7 +294,7 @@ export default class Artifacts extends View {
   tabs(t) {
     const count = (n) => (n ? ` ${n}` : "");
     const html = Object.values(this.html).flat().length + this.registry.links.length;
-    const listeners = Object.values(this.listeners).flat().length;
+    const listeners = this.unsaved().length;
     const seg = (value, label) => div().id(`tab-${value}`).px(10).h(24).flex().items_center().rounded(5).cursor_pointer()
       .text_size(11.5).text_color(this.tab === value ? t.foreground : t.muted).when(this.tab === value, (el) => el.bg(t.raised))
       .on_click((_e, cx) => this.setTab(value, cx))
@@ -371,19 +379,14 @@ export default class Artifacts extends View {
   }
 
   discoverCard(p, t) {
-    const inRepo = (f) => f === p.repo || f?.startsWith(`${p.repo}/`);
-    const saved = this.registry.apps.find((a) => (a.machine ?? null) === p.machine && inRepo(a.folder));
-    const ours = this.live.some((r) => r.machine === p.machine && p.ports.includes(r.port));
     const looking = this.investigating.has(p.id);
     const key = `disc:${p.machine ?? "local"}:${p.port}`;
     const badges = [
       p.machine && p.http.length > 0 && !p.direct && this.badge(`only on ${p.machine}: opens through ssh`, t),
-      ours && this.badge("started from here", t, t.done),
-      saved && !ours && this.badge(`saved as ${saved.name}`, t, t.accent),
     ].filter(Boolean);
     const buttons = [
       p.http.length > 0 && this.button(`dopen-${p.id}`, this.pending.has(p.id) ? "spinner" : "external", "Open", (cx) => this.open(p.machine, p.http[0], "/", p.id, cx), t),
-      !ours && !saved && this.button(`dsave-${p.id}`, looking ? "spinner" : "sparkle", looking ? "Working it out…" : "Save as app", (cx) => { if (!looking) this.save(p, cx); }, t, "accent"),
+      this.button(`dsave-${p.id}`, looking ? "spinner" : "sparkle", looking ? "Working it out…" : "Save as app", (cx) => { if (!looking) this.save(p, cx); }, t, "accent"),
     ].filter(Boolean);
     return this.card(`disc-${p.id}`, {
       key, title: p.repo.split("/").pop(), sub: this.subline(p.machine, tilde(p.repo), t),
@@ -439,8 +442,8 @@ export default class Artifacts extends View {
 
   body(t) {
     if (this.tab === "discover") {
-      const list = Object.values(this.listeners).flat().sort((a, b) => (b.http.length > 0) - (a.http.length > 0));
-      return this.gallery(null, null, list.map((p) => this.discoverCard(p, t)), t, "Nothing is listening on your machines right now.");
+      const list = this.unsaved().sort((a, b) => (b.http.length > 0) - (a.http.length > 0));
+      return this.gallery(null, null, list.map((p) => this.discoverCard(p, t)), t, "Nothing new is listening on your machines. Saved apps are under Apps.");
     }
     if (this.tab === "artifacts") {
       const html = Object.values(this.html).flat().sort((a, b) => b.mtime - a.mtime);
