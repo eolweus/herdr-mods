@@ -15,6 +15,8 @@ fi | sort -u | while IFS="$(printf '\\t')" read -r port pid; do
   repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
   unit=$(sed -n 's|^0::/user.slice/.*/\\([^/]*\\.service\\)$|\\1|p' "/proc/$pid/cgroup" 2>/dev/null)
   case "$unit" in app-*|*@*) unit= ;; esac
+  # A server started from inside another unit (a chat engine, say) only shares its cgroup.
+  if [ -n "$unit" ]; then main=$(systemctl --user show -p MainPID --value "$unit" 2>/dev/null); ppid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null); [ "$main" = "$pid" ] || [ "$main" = "$ppid" ] || unit=; fi
   printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "$pid" "$cwd" "$args" "\${code:-000}" "$repo" "$unit"
 done
 # Every running compose container, by project (from its labels); port is "-" when it publishes none, pid is docker:<project>.
