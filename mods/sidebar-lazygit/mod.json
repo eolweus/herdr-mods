@@ -1,0 +1,11 @@
+{
+  "place": "none",
+  "title": "lazygit sidebar",
+  "overlay": {
+    "kind": "popup",
+    "frame": "none",
+    "width": 1,
+    "height": 1
+  },
+  "description": "Cmd+L opens lazygit beside the current tab, and closes it again. Each tab keeps its own."
+}

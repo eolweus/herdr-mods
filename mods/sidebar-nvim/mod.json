@@ -1,0 +1,11 @@
+{
+  "place": "none",
+  "title": "nvim sidebar",
+  "overlay": {
+    "kind": "popup",
+    "frame": "none",
+    "width": 1,
+    "height": 1
+  },
+  "description": "Cmd+O opens nvim beside the current tab, and closes it again. Each tab keeps its own."
+}

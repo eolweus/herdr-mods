@@ -1,0 +1,11 @@
+{
+  "place": "none",
+  "title": "Changes panel toggle",
+  "overlay": {
+    "kind": "popup",
+    "frame": "none",
+    "width": 1,
+    "height": 1
+  },
+  "description": "Cmd+E toggles the Changes panel beside the work area: the git diff of the focused folder, with a commit box."
+}

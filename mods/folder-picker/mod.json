@@ -1,0 +1,5 @@
+{
+  "place": "none",
+  "title": "Folder picker",
+  "description": "Recent folders and a folder browser in one popup. Search ranks folders the way zoxide does, and every pick is added to zoxide. Other mods open it whenever they need a folder."
+}

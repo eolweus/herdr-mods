@@ -1,0 +1,5 @@
+# Scheduler
+
+One page for systemd timers, launchd agents, crontab entries and scheduled Claude runs on every machine. Run, pause, reschedule and group jobs, read their scripts and logs, or start a new Claude run.
+
+![Scheduler](screenshot.png)

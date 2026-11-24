@@ -1,0 +1,9 @@
+{
+  "place": "none",
+  "title": "Pane header",
+  "cloned_from": {
+    "name": "pane",
+    "version": "0.1.16"
+  },
+  "description": "The pane header. Chat panes show their title, folder and status, and the edge takes the machine's color. Split, zoom and close buttons on the right."
+}

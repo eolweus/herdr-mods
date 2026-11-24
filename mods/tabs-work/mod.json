@@ -1,0 +1,9 @@
+{
+  "place": "none",
+  "title": "Tabs",
+  "cloned_from": {
+    "name": "tabs",
+    "version": "0.1.16"
+  },
+  "description": "The tab bar: tabs as pills, a + menu, the machine's color, and buttons for the Claude, Files and Changes panels."
+}

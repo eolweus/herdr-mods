@@ -1,0 +1,11 @@
+{
+  "place": "none",
+  "title": "New pane",
+  "focusable": true,
+  "overlay": {
+    "kind": "dialog",
+    "width": 560,
+    "height": 460
+  },
+  "description": "Cmd+T, Cmd+N and Cmd+D open a small launcher: start a terminal or a Claude chat, here or in another folder or on another machine."
+}
