@@ -15,6 +15,17 @@ fi | sort -u | while IFS="$(printf '\\t')" read -r port pid; do
   repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
   printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "$pid" "$cwd" "$args" "\${code:-000}" "$repo"
 done
+# Compose containers' published ports belong to root's docker-proxy, so ask docker; their "pid" is docker:<project>.
+command -v docker >/dev/null 2>&1 && docker ps --format '{{.Label "com.docker.compose.project"}}\\t{{.Label "com.docker.compose.project.working_dir"}}\\t{{.Names}}\\t{{.Image}}\\t{{.Ports}}' 2>/dev/null |
+while IFS="$(printf '\\t')" read -r proj dir name image ports; do
+  [ -n "$proj" ] && [ -n "$dir" ] || continue
+  repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
+  echo "$ports" | tr ',' '\\n' | sed -n 's/.*:\\([0-9][0-9]*\\)->.*/\\1/p' | sort -u | while read -r port; do
+    code=$(curl -s -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null)
+    printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "docker:$proj" "$dir" "docker compose · $name ($image)" "\${code:-000}" "$repo"
+  done
+done
+true
 `;
 
 // mtime<TAB>path for .html files Claude sessions wrote in the last 30 days that still exist.
@@ -43,7 +54,9 @@ export function parseListeners(stdout, machine) {
   for (const line of stdout.split("\n")) {
     const [port, pid, cwd, args, code, repo] = line.split("\t");
     if (!port || !cwd || !/^\/(Users|home)\//.test(cwd) || NOISE.test(args ?? "") || OWN.test(cwd)) continue;
-    const p = byPid.get(pid) ?? { pid, cwd, repo: repo || cwd, args: (args ?? "").trim(), ports: [], http: [] };
+    const docker = pid.startsWith("docker:") ? pid.slice(7) : null;
+    const p = byPid.get(pid) ?? { pid, docker, cwd, repo: repo || cwd, args: (args ?? "").trim(), ports: [], http: [] };
+    if (docker && !p.args.includes(args.trim())) p.args += `, ${args.trim().replace(/^docker compose · /, "")}`;
     if (!p.ports.includes(Number(port))) p.ports.push(Number(port));
     if (code && code !== "000" && !p.http.includes(Number(port))) p.http.push(Number(port));
     byPid.set(pid, p);
@@ -123,7 +136,12 @@ export async function stop(address) {
   await hc(["rm", address]).catch(() => null);
 }
 
-export const killPids = (machine, pids) => sh('kill "$@"', pids, machine);
+// Real processes get a kill; compose projects (pid docker:<project>) get docker compose stop.
+export async function stopProcs(machine, procs) {
+  const pids = procs.filter((p) => !p.docker).map((p) => p.pid);
+  if (pids.length) await sh('kill "$@"', pids, machine);
+  for (const p of procs.filter((p) => p.docker)) await sh('docker compose -p "$1" stop', [p.docker], machine, 120000);
+}
 
 export const urlFor = (machine, port, path = "/") => `http://${machine ?? "localhost"}:${port}${path.startsWith("/") ? path : `/${path}`}`;
 export const openInChrome = (target) => exec("open", ["-a", "Google Chrome", target]);

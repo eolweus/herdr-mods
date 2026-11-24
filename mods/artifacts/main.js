@@ -2,7 +2,7 @@ import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, checking, closeOverlay, exec, layout, machines, notify, openOverlay, props, run, setShared, shared, theme } from "herdr";
 import {
-  HTML, LISTEN, capture, freePort, hash, investigate, killPids, launch, loadRegistry, openInChrome, parseHtml, parseListeners,
+  HTML, LISTEN, capture, freePort, hash, investigate, launch, stopProcs, loadRegistry, openInChrome, parseHtml, parseListeners,
   probe, reach, reachable, running, sh, slug, stop, updateRegistry, urlFor,
 } from "./data.js";
 
@@ -171,7 +171,7 @@ export default class Artifacts extends View {
 
   stopOutside(g, key, cx) {
     this.busy(key, cx, async () => {
-      await killPids(g.machine, g.procs.map((p) => p.pid));
+      await stopProcs(g.machine, g.procs);
       const k = g.machine ?? "local";
       this.listeners[k] = (this.listeners[k] ?? []).filter((x) => x.id !== g.id);
       this.scannedAt = 0;
@@ -367,7 +367,8 @@ export default class Artifacts extends View {
         ? this.button(`del-${app.id}`, "x", "Remove?", (cx) => this.remove("apps", app.id, cx), t, "danger")
         : this.button(`del-${app.id}`, "x", null, (cx) => { this.armed = `del:${app.id}`; cx.notify(); }, t),
     ].filter(Boolean);
-    const tip = r ? "Stop it" : ext ? `Stop it (kills pid ${ext.procs.map((p) => p.pid).join(", ")})` : "Start it";
+    const what = ext?.procs.map((p) => (p.docker ? `docker compose -p ${p.docker} stop` : `kill ${p.pid}`)).join(", ");
+    const tip = r ? "Stop it" : ext ? `Stop it (${what})` : "Start it";
     const flip = (cx) => (r ? this.stopIt(r, app.id, cx) : ext ? this.stopOutside(ext, app.id, cx) : this.start(app, cx));
     return this.card(`app-${app.id}`, {
       key, title: app.name, sub: this.subline(app.machine ?? null, tilde(app.folder), t),
