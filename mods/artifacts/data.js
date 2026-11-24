@@ -1,6 +1,6 @@
 import { exec, hc, readTextFile, setShared, writeTextFile } from "herdr";
 
-// port<TAB>pid<TAB>cwd<TAB>args<TAB>http status ("000": not http) for this user's TCP listeners on ports >= 1024.
+// port<TAB>pid<TAB>cwd<TAB>args<TAB>http status ("000": not http)<TAB>git root for this user's TCP listeners on ports >= 1024.
 export const LISTEN = `
 me=$(id -u)
 if [ "$(uname)" = Darwin ]; then
@@ -12,7 +12,8 @@ fi | sort -u | while IFS="$(printf '\\t')" read -r port pid; do
   if [ -d /proc ]; then cwd=$(readlink "/proc/$pid/cwd"); args=$(tr '\\0' ' ' <"/proc/$pid/cmdline")
   else cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'); args=$(ps -o args= -p "$pid"); fi
   code=$(curl -s -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" 2>/dev/null)
-  printf '%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "$pid" "$cwd" "$args" "\${code:-000}"
+  repo=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)
+  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' "$port" "$pid" "$cwd" "$args" "\${code:-000}" "$repo"
 done
 `;
 
@@ -36,17 +37,29 @@ export const sh = (script, args, on, timeout = 30000) => exec("sh", ["-c", scrip
 const NOISE = /claude|ccd-cli|agent-browser|terminal-browser|herdr|raycast|spotify|logi|code helper|cursor|zed/i;
 const OWN = /\/herdr-chat\/engine$/;
 
+// One entry per repo (or folder, outside git), holding every process listening from it.
 export function parseListeners(stdout, machine) {
   const byPid = new Map();
   for (const line of stdout.split("\n")) {
-    const [port, pid, cwd, args, code] = line.split("\t");
+    const [port, pid, cwd, args, code, repo] = line.split("\t");
     if (!port || !cwd || !/^\/(Users|home)\//.test(cwd) || NOISE.test(args ?? "") || OWN.test(cwd)) continue;
-    const p = byPid.get(pid) ?? { machine, pid, cwd, args: (args ?? "").trim(), ports: [], http: [] };
-    p.ports.push(Number(port));
-    if (code && code !== "000") p.http.push(Number(port));
+    const p = byPid.get(pid) ?? { pid, cwd, repo: repo || cwd, args: (args ?? "").trim(), ports: [], http: [] };
+    if (!p.ports.includes(Number(port))) p.ports.push(Number(port));
+    if (code && code !== "000" && !p.http.includes(Number(port))) p.http.push(Number(port));
     byPid.set(pid, p);
   }
-  return [...byPid.values()].map((p) => ({ ...p, id: `${machine ?? "local"}:${p.pid}`, port: p.http[0] ?? p.ports[0] }));
+  const byRepo = new Map();
+  for (const p of byPid.values()) {
+    const g = byRepo.get(p.repo) ?? { machine, repo: p.repo, cwd: p.repo, procs: [] };
+    g.procs.push(p);
+    byRepo.set(p.repo, g);
+  }
+  return [...byRepo.values()].map((g) => {
+    g.procs.sort((a, b) => (b.http.length > 0) - (a.http.length > 0) || a.cwd.length - b.cwd.length);
+    const ports = g.procs.flatMap((p) => p.ports).sort((a, b) => a - b);
+    const http = g.procs.flatMap((p) => p.http);
+    return { ...g, id: `${machine ?? "local"}:${g.repo}`, ports, http, port: http[0] ?? ports[0] };
+  });
 }
 
 // One row per folder: index.html if there is one, else the newest file.
@@ -156,13 +169,15 @@ export async function updateRegistry(change) {
   }
 }
 
-export function setupPrompt(p) {
+export function setupPrompt(g) {
+  const procs = g.procs.map((p) => `- pid ${p.pid}, listening on ${p.ports.join(", ")}, cwd ${p.cwd}, command: ${p.args}`).join("\n");
   return `A local web app is running on this machine and I want to be able to start it again later from a launcher.
-Running process: pid ${p.pid}, listening on port${p.ports.length > 1 ? "s" : ""} ${p.ports.join(", ")}, cwd ${p.cwd}, command: ${p.args}
+${g.procs.length > 1 ? "These processes all run out of the same repo, likely one app plus its helpers (a dev script, an API, a stand-in service):" : "Running process:"}
+${procs}
 
 Inspect the project (package.json, scripts, README, config, how the port is chosen) without changing anything, and work out:
 - the folder to start it from
-- a shell command that starts it from scratch, listening on the port in $PORT. Use the project's own way to pick the port (env var, --port flag, config) and wire $PORT into it. Include needed steps like activating a venv, but no installs.
+- a single shell command that starts all of it from scratch, with the web UI listening on the port in $PORT. Use the project's own way to pick the port (env var, --port flag, config) and wire $PORT into it. Include needed steps like activating a venv, but no installs.
 - whether it can listen on any port. If the port is hard-coded and can't be changed without editing files, set fixedPort to it and don't use $PORT.
 - whether it needs to bind 0.0.0.0 to be reachable from another machine, and make the command do that if the project supports it.
 - the URL path to open (usually "/").
@@ -173,13 +188,13 @@ Reply with only a JSON object, no prose:
 
 export async function investigate(p) {
   const r = await sh('cd "$1" && claude -p "$2" --output-format json --allowedTools "Read Glob Grep" --disallowedTools "Edit Write Bash NotebookEdit"',
-    [p.cwd, setupPrompt(p)], p.machine, 600000);
+    [p.repo, setupPrompt(p)], p.machine, 600000);
   let result;
   try { result = JSON.parse(r.stdout).result; } catch { throw new Error(r.stderr.trim() || r.stdout.slice(0, 300) || "claude gave no answer"); }
   const json = /\{[\s\S]*\}/.exec(result ?? "")?.[0];
   if (!json) throw new Error(`no setup in the answer: ${String(result).slice(0, 200)}`);
   const s = JSON.parse(json);
-  return { name: s.name ?? p.cwd.split("/").pop(), machine: p.machine, folder: s.folder ?? p.cwd, command: s.command ?? "", port: s.fixedPort ?? null, path: s.path ?? "/", notes: s.notes ?? "" };
+  return { name: s.name ?? p.repo.split("/").pop(), machine: p.machine, folder: s.folder ?? p.cwd, command: s.command ?? "", port: s.fixedPort ?? null, path: s.path ?? "/", notes: s.notes ?? "" };
 }
 
 const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";

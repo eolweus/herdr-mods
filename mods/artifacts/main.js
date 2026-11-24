@@ -298,7 +298,7 @@ export default class Artifacts extends View {
             .child(div().text_size(14).font_semibold().text_color(t.foreground).truncate().child(title))
             .when(Boolean(sub), (el) => el.child(sub)))
           .when(Boolean(toggle), (el) => el.child(toggle)))
-        .when(Boolean(description), (el) => el.child(div().text_size(12).text_color(t.muted).max_h(34).overflow_hidden().child(description)))
+        .when(Boolean(description), (el) => el.child(typeof description === "string" ? div().text_size(12).text_color(t.muted).max_h(34).overflow_hidden().child(description) : description))
         .when(badges?.length > 0, (el) => el.child(h_flex().flex_wrap().gap(5).pt(2).children(badges)))
         .when(buttons?.length > 0 || Boolean(retake), (el) => el.child(h_flex().pt(4).gap(5).flex_wrap()
           .children(buttons ?? [])
@@ -348,12 +348,12 @@ export default class Artifacts extends View {
   }
 
   discoverCard(p, t) {
-    const saved = this.registry.apps.find((a) => (a.machine ?? null) === p.machine && a.folder === p.cwd);
+    const inRepo = (f) => f === p.repo || f?.startsWith(`${p.repo}/`);
+    const saved = this.registry.apps.find((a) => (a.machine ?? null) === p.machine && inRepo(a.folder));
     const ours = this.live.some((r) => r.machine === p.machine && p.ports.includes(r.port));
     const looking = this.investigating.has(p.id);
     const key = `disc:${p.machine ?? "local"}:${p.port}`;
     const badges = [
-      ...p.ports.map((x) => this.badge(p.http.includes(x) ? `port ${x}` : `port ${x} · not http`, t, p.http.includes(x) ? t.foreground : t.dim)),
       p.machine && p.http.length > 0 && !p.direct && this.badge(`only on ${p.machine}: opens through ssh`, t),
       ours && this.badge("started from here", t, t.done),
       saved && !ours && this.badge(`saved as ${saved.name}`, t, t.accent),
@@ -363,10 +363,23 @@ export default class Artifacts extends View {
       !ours && !saved && this.button(`dsave-${p.id}`, looking ? "spinner" : "sparkle", looking ? "Working it out…" : "Save as app", (cx) => { if (!looking) this.save(p, cx); }, t, "accent"),
     ].filter(Boolean);
     return this.card(`disc-${p.id}`, {
-      key, title: p.cwd.split("/").pop(), sub: this.subline(p.machine, tilde(p.cwd), t), description: p.args, badges, buttons,
+      key, title: p.repo.split("/").pop(), sub: this.subline(p.machine, tilde(p.repo), t),
+      description: v_flex().gap(4).children(p.procs.map((x) => this.procRow(p, x, t))), badges, buttons,
       retake: p.http.length > 0 ? (cx) => this.takeShot(key, () => reach(p.machine, p.http[0], this.live), cx) : null,
       placeholder: p.http.length ? null : "server",
     }, t);
+  }
+
+  // A process in a discovered repo: where it runs, its command, and its ports (http ones open on click).
+  procRow(g, x, t) {
+    const where = x.cwd === g.repo ? "" : `${x.cwd.slice(g.repo.length + 1)}  `;
+    return v_flex().gap(3).min_w(0)
+      .child(div().text_size(11).text_color(t.muted).truncate().child(`${where}${x.args}`))
+      .child(h_flex().gap(4).flex_wrap().children(x.ports.map((port) => x.http.includes(port)
+        ? div().id(`port-${g.id}-${port}`).px(6).py(1).rounded(5).cursor_pointer().bg(t.background).border_1().border_color(t.border)
+          .text_size(10.5).text_color(t.accent).hover((s) => s.bg(t.hover)).tooltip(`Open port ${port}`)
+          .on_click((_e, cx) => this.open(g.machine, port, "/", `${g.id}:${port}`, cx)).child(`:${port}`)
+        : this.badge(`:${port} · not http`, t))));
   }
 
   htmlCard(item, t) {
