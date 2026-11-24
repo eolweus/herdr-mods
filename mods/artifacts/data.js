@@ -86,8 +86,11 @@ export async function running() {
   const r = await hc(["ls", "--json"]);
   const out = [];
   for (const t of JSON.parse(r.stdout || "{}").terminals ?? []) {
+    if (t.state !== "live") continue;
+    const tun = /^tunnel-(.+)-(\d+)-(\d+)$/.exec(t.name ?? "");
+    if (tun) { out.push({ kind: "tunnel", id: tun[1], port: Number(tun[2]), remote: Number(tun[3]), address: t.address, machine: null }); continue; }
     const m = /^(app|html)-(.+)-(\d+)$/.exec(t.name ?? "");
-    if (!m || t.state !== "live") continue;
+    if (!m) continue;
     const slash = t.address.indexOf("/");
     out.push({ kind: m[1], id: m[2], port: Number(m[3]), address: t.address, machine: slash > 0 ? t.address.slice(0, slash) : null });
   }
@@ -177,4 +180,49 @@ export async function investigate(p) {
   if (!json) throw new Error(`no setup in the answer: ${String(result).slice(0, 200)}`);
   const s = JSON.parse(json);
   return { name: s.name ?? p.cwd.split("/").pop(), machine: p.machine, folder: s.folder ?? p.cwd, command: s.command ?? "", port: s.fixedPort ?? null, path: s.path ?? "/", notes: s.notes ?? "" };
+}
+
+const CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const SHOTS = "data/artifacts/shots";
+let queue = Promise.resolve();
+
+// Headless Chrome with its own profile, one at a time. Returns the shot's path relative to the app home (what image() takes).
+export function capture(appHome, key, target) {
+  const name = `${key.split(":")[0]}-${hash(key)}-${Date.now().toString(36)}.png`;
+  const run = async () => {
+    await exec("mkdir", ["-p", `${appHome}/${SHOTS}`]);
+    const r = await exec(CHROME, ["--headless", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--mute-audio",
+      `--user-data-dir=${appHome}/data/artifacts/chrome`, "--window-size=1280,720", "--timeout=4000", `--screenshot=${appHome}/${SHOTS}/${name}`, target], { timeout: 45000 });
+    if (!/bytes written to file/.test(r.stderr + r.stdout)) throw new Error("no screenshot");
+    return `${SHOTS}/${name}`;
+  };
+  const p = queue.then(run, run);
+  queue = p.catch(() => null);
+  return p;
+}
+
+export async function reachable(url) {
+  const r = await exec("curl", ["-s", "-m", "2", "-o", "/dev/null", "-w", "%{http_code}", url]).catch(() => null);
+  return Boolean(r && r.stdout.trim() !== "000" && r.stdout.trim() !== "");
+}
+
+// A remote app that only listens on its machine's localhost: forward it with ssh and use localhost here.
+export async function tunnel(machine, port, live) {
+  const open = live.find((r) => r.kind === "tunnel" && r.id === machine && r.remote === port);
+  if (open) return open.port;
+  let local = port;
+  if (await reachable(`http://localhost:${port}/`)) local = await freePort(null);
+  const name = `tunnel-${machine}-${local}`;
+  const r = await hc(["run", "--bg", "--json", "--no-parent", "--no-notify", "--name", `${name}-${port}`, "--",
+    "ssh", "-N", "-o", "ExitOnForwardFailure=yes", "-L", `${local}:127.0.0.1:${port}`, machine]);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || "ssh tunnel failed");
+  for (let i = 0; i < 20 && !(await reachable(`http://localhost:${local}/`)); i++) await exec("sleep", ["0.25"]);
+  return local;
+}
+
+// Where this Mac reaches a port on a machine: directly, or through a tunnel.
+export async function reach(machine, port, live) {
+  if (!machine) return `http://localhost:${port}`;
+  if (await reachable(`http://${machine}:${port}/`)) return `http://${machine}:${port}`;
+  return `http://localhost:${await tunnel(machine, port, live)}`;
 }

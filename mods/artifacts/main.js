@@ -1,14 +1,17 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { checking, closeOverlay, exec, layout, machines, notify, openOverlay, props, run, shared, theme } from "herdr";
+import { appHome, checking, closeOverlay, exec, layout, machines, notify, openOverlay, props, run, setShared, shared, theme } from "herdr";
 import {
-  HTML, LISTEN, freePort, hash, investigate, launch, loadRegistry, openInChrome, parseHtml, parseListeners,
-  probe, running, sh, slug, stop, updateRegistry, urlFor,
+  HTML, LISTEN, capture, freePort, hash, investigate, launch, loadRegistry, openInChrome, parseHtml, parseListeners,
+  probe, reach, reachable, running, sh, slug, stop, updateRegistry, urlFor,
 } from "./data.js";
 
 const EVERY_MS = 10000;
 const SCAN_MS = 60000;
 const ICON = (name) => `mods/artifacts/${name}.svg`;
+// Module state is shared by every copy of the page, so two copies never shoot the same thing at once.
+const shooting = new Set();
+const shots = () => shared("artifacts.shots") ?? {};
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -51,8 +54,9 @@ export default class Artifacts extends View {
     this.html = {};
     this.pending = new Set();
     this.investigating = new Set();
+    this.shotThisRun = new Set();
     this.armed = null;
-    this.closed = new Set(["discover"]);
+    this.tab = p.tab ?? localStorage.getItem("artifacts.tab") ?? "apps";
     this.seen = shared("artifacts.changed") ?? 0;
     this.scannedAt = 0;
     if (checking()) return;
@@ -70,8 +74,9 @@ export default class Artifacts extends View {
         this.error = null;
         cx.notify();
         const ready = new Set();
-        await Promise.all(live.map(async (r) => { if (await probe(r.machine, r.port)) ready.add(r.address); }));
+        await Promise.all(live.filter((r) => r.kind !== "tunnel").map(async (r) => { if (await probe(r.machine, r.port)) ready.add(r.address); }));
         this.ready = ready;
+        this.autoShots(cx);
       } catch (e) {
         this.error = String(e?.message ?? e);
       }
@@ -87,12 +92,61 @@ export default class Artifacts extends View {
       const k = m.name ?? "local";
       cx.spawn(async (cx) => {
         const [l, h] = await Promise.all([sh(LISTEN, [], m.name, 60000).catch(() => null), sh(HTML, [], m.name, 60000).catch(() => null)]);
-        if (l) this.listeners[k] = parseListeners(l.stdout, m.name);
+        if (l) {
+          const found = parseListeners(l.stdout, m.name);
+          await Promise.all(found.map(async (p) => { p.direct = !m.name || (p.http.length > 0 && (await reachable(urlFor(m.name, p.port)))); }));
+          this.listeners[k] = found;
+        }
         if (h) this.html[k] = parseHtml(h.stdout, m.name);
+        this.autoShots(cx);
         cx.notify();
       });
     }
   }
+
+  // Screenshots
+
+  shot(key) {
+    return shots()[key]?.path ?? null;
+  }
+
+  takeShot(key, target, cx) {
+    if (shooting.has(key)) return;
+    shooting.add(key);
+    this.shotThisRun.add(key);
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const url = typeof target === "function" ? await target() : target;
+        const path = await capture(appHome(), key, url);
+        const all = shots();
+        const old = all[key]?.path;
+        setShared("artifacts.shots", { ...all, [key]: { path, at: Date.now() } });
+        if (old) exec("rm", ["-f", `${appHome()}/${old}`]).catch(() => null);
+      } catch {}
+      shooting.delete(key);
+      cx.notify();
+    });
+  }
+
+  // Running apps once per run, reachable discovered servers and local HTML when there's no picture yet (or the file changed).
+  autoShots(cx) {
+    for (const app of this.registry.apps) {
+      const r = this.liveApp(app);
+      const key = `app:${app.id}`;
+      if (r && this.ready.has(r.address) && !this.shotThisRun.has(key)) this.takeShot(key, () => reach(app.machine, r.port, this.live).then((u) => u + (app.path ?? "/")), cx);
+    }
+    for (const p of Object.values(this.listeners).flat()) {
+      const key = `disc:${p.machine ?? "local"}:${p.port}`;
+      if (p.direct && p.http.length && !this.shot(key) && !this.shotThisRun.has(key)) this.takeShot(key, urlFor(p.machine, p.http[0]), cx);
+    }
+    for (const h of this.html.local ?? []) {
+      const key = `html:${h.id}`;
+      if ((!this.shot(key) || shots()[key].at < h.mtime) && !this.shotThisRun.has(key)) this.takeShot(key, `file://${h.main}`, cx);
+    }
+  }
+
+  // State and actions
 
   liveApp(app) {
     return this.live.find((r) => r.kind === "app" && r.id === app.id && r.machine === (app.machine ?? null));
@@ -117,25 +171,33 @@ export default class Artifacts extends View {
     this.busy(app.id, cx, async () => {
       const port = app.port ?? (await freePort(app.machine));
       await launch(`app-${app.id}-${port}`, app.machine, app.folder, app.command, port);
-      notify({ title: `Starting ${app.name}`, body: urlFor(app.machine, port, app.path), level: "info", timeout: 3000 });
+      this.shotThisRun.delete(`app:${app.id}`);
     });
   }
 
-  stopApp(r, key, cx) {
+  stopIt(r, key, cx) {
     this.busy(key, cx, () => stop(r.address));
+  }
+
+  open(machine, port, path, key, cx) {
+    this.busy(key, cx, async () => openInChrome((await reach(machine, port, this.live)) + (path ?? "/")));
   }
 
   // Local files open straight in Chrome; another machine's folder gets a static server first.
   openHtml(item, cx) {
     if (!item.machine) return void openInChrome(item.main);
-    const r = this.liveHtml(item);
     const file = item.main.slice(item.dir.length);
-    if (r) return void openInChrome(urlFor(item.machine, r.port, file));
+    const r = this.liveHtml(item);
     this.busy(item.id, cx, async () => {
-      const port = await freePort(item.machine);
-      await launch(`html-${hash(item.dir)}-${port}`, item.machine, item.dir, 'exec python3 -m http.server "$PORT" --bind 0.0.0.0', port);
-      for (let i = 0; i < 20 && !(await probe(item.machine, port)); i++) await exec("sleep", ["0.25"]);
-      await openInChrome(urlFor(item.machine, port, file));
+      let port = r?.port;
+      if (!port) {
+        port = await freePort(item.machine);
+        await launch(`html-${hash(item.dir)}-${port}`, item.machine, item.dir, 'exec python3 -m http.server "$PORT" --bind 0.0.0.0', port);
+        for (let i = 0; i < 20 && !(await probe(item.machine, port)); i++) await exec("sleep", ["0.25"]);
+      }
+      const url = (await reach(item.machine, port, this.live)) + file;
+      await openInChrome(url);
+      if (!this.shot(`html:${item.id}`)) this.takeShot(`html:${item.id}`, url, cx);
     });
   }
 
@@ -162,8 +224,9 @@ export default class Artifacts extends View {
     openOverlay({ mod: "artifacts", kind: "dialog", width: 560, props: { edit: kind, item } });
   }
 
-  toggleCard(key, cx) {
-    if (this.closed.has(key)) this.closed.delete(key); else this.closed.add(key);
+  setTab(tab, cx) {
+    this.tab = tab;
+    localStorage.setItem("artifacts.tab", tab);
     cx.notify();
   }
 
@@ -176,7 +239,7 @@ export default class Artifacts extends View {
       .text_size(11).text_color(color ?? t.foreground)
       .hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { cx.stop_propagation(); action(cx); })
-      .when(Boolean(icon), (el) => el.child(svg(ICON(icon)).size(11)))
+      .when(Boolean(icon), (el) => el.child(icon === "spinner" ? svg(ICON(icon)).size(11).spin(900) : svg(ICON(icon)).size(11)))
       .when(Boolean(label), (el) => el.child(label));
   }
 
@@ -188,96 +251,178 @@ export default class Artifacts extends View {
       .child(svg(ICON(icon)).size(12)).child(label);
   }
 
-  dot(state, t) {
-    if (state === "busy" || state === "starting") return svg(ICON("spinner")).size(10).text_color(t.working).spin(900);
-    return div().size(7).rounded(4).bg(state === "running" ? t.done : t.dim);
+  toggle(id, on, busy, tip, onClick, t) {
+    return div().id(`toggle-${id}`).w(30).h(18).flex_none().rounded(9).p(2).flex().items_center()
+      .bg(on ? t.accent : t.border)
+      .when(!busy, (el) => el.cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }))
+      .when(busy, (el) => el.opacity(0.5))
+      .when(Boolean(tip), (el) => el.tooltip(tip))
+      .child(div().size(14).rounded(7).bg("#ffffff").when(on, (el) => el.ml(12)));
   }
 
-  card(key, icon, title, sub, actions, body, t) {
-    const open = !this.closed.has(key);
-    return v_flex().rounded(12).bg(t.surface).border_1().border_color(t.border)
-      .child(h_flex().id(`card-${key}`).gap(10).px(14).py(12).items_center().cursor_pointer()
-        .on_click((_e, cx) => this.toggleCard(key, cx))
-        .child(svg(ICON(open ? "chevron" : "chevron-right")).size(12).text_color(t.dim))
-        .child(svg(ICON(icon)).size(15).text_color(t.muted))
-        .child(div().text_size(14.5).font_semibold().text_color(t.foreground).child(title))
-        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.dim).child(sub))
-        .children(actions))
-      .when(open, (el) => el.child(v_flex().px(8).pb(10).gap(1).children(body)));
+  badge(text, t, color) {
+    return div().max_w(270).truncate().px(6).py(1).rounded(5).bg(t.background).border_1().border_color(t.border)
+      .text_size(10.5).text_color(color ?? t.dim).flex_none().child(text);
   }
 
-  row(id, state, title, chipMachine, sub, right, actions, t) {
-    return h_flex().id(id).gap(12).px(10).py(7).items_center().rounded(7).hover((s) => s.bg(t.hover))
-      .child(div().w(10).flex_none().flex().justify_center().child(this.dot(state, t)))
-      .child(v_flex().flex_1().min_w(0)
-        .child(h_flex().gap(6).items_center().min_w(0)
-          .when(chipMachine !== undefined, (el) => el.child(machineChip(chipMachine, t)))
-          .child(div().text_size(12.5).font_medium().truncate().text_color(t.foreground).child(title)))
-        .child(div().text_size(11).truncate().text_color(t.dim).child(sub)))
-      .child(div().w(200).flex_none().text_size(11.5).truncate().text_color(t.muted).child(right ?? ""))
-      .child(h_flex().flex_none().gap(5).justify_end().children(actions));
+  tabs(t) {
+    const count = (n) => (n ? ` ${n}` : "");
+    const html = Object.values(this.html).flat().length + this.registry.links.length;
+    const listeners = Object.values(this.listeners).flat().length;
+    const seg = (value, label) => div().id(`tab-${value}`).px(10).h(24).flex().items_center().rounded(5).cursor_pointer()
+      .text_size(11.5).text_color(this.tab === value ? t.foreground : t.muted).when(this.tab === value, (el) => el.bg(t.raised))
+      .on_click((_e, cx) => this.setTab(value, cx))
+      .child(label);
+    return h_flex().p(2).gap(2).rounded(7).border_1().border_color(t.border).bg(t.background)
+      .child(seg("apps", `Apps${count(this.registry.apps.length)}`))
+      .child(seg("artifacts", `Claude artifacts${count(html)}`))
+      .child(seg("discover", `Discover${count(listeners)}`));
   }
 
-  empty(text, t) {
-    return div().px(10).py(8).text_size(12).text_color(t.dim).child(text);
+  // A Plugins-style card: picture on top, then title, switch, description, badges and buttons.
+  card(id, { key, title, sub, description, badges, toggle, buttons, placeholder, retake, dim }, t) {
+    const path = key ? this.shot(key) : null;
+    const taking = key && shooting.has(key);
+    const picture = div().h(168).w_full().flex_none().bg(t.background).border_b_1().border_color(t.border).overflow_hidden()
+      .flex().items_center().justify_center()
+      .child(path ? image(path).w_full().h(168)
+        : taking ? svg(ICON("spinner")).size(18).text_color(t.dim).spin(900)
+        : placeholder ? svg(ICON(placeholder)).size(30).text_color(t.border)
+        : div().text_size(32).font_semibold().text_color(t.border).child((title || "?").slice(0, 1).toUpperCase()));
+    return v_flex().id(`card-${id}`).w(300).flex_none().rounded(12).bg(t.surface).border_1().border_color(t.border).overflow_hidden()
+      .when(Boolean(dim), (el) => el.opacity(0.7))
+      .child(picture)
+      .child(v_flex().gap(6).p(14)
+        .child(h_flex().gap(8).items_center()
+          .child(v_flex().flex_1().min_w(0)
+            .child(div().text_size(14).font_semibold().text_color(t.foreground).truncate().child(title))
+            .when(Boolean(sub), (el) => el.child(sub)))
+          .when(Boolean(toggle), (el) => el.child(toggle)))
+        .when(Boolean(description), (el) => el.child(div().text_size(12).text_color(t.muted).max_h(34).overflow_hidden().child(description)))
+        .when(badges?.length > 0, (el) => el.child(h_flex().flex_wrap().gap(5).pt(2).children(badges)))
+        .when(buttons?.length > 0 || Boolean(retake), (el) => el.child(h_flex().pt(4).gap(5).flex_wrap()
+          .children(buttons ?? [])
+          .when(Boolean(retake), (x) => x.child(div().flex_1()).child(this.button(`shot-${id}`, taking ? "spinner" : "camera", null, retake, t))))));
   }
 
-  appRow(app, t) {
+  subline(machine, text, t) {
+    return h_flex().gap(6).items_center().min_w(0)
+      .child(machineChip(machine, t))
+      .child(div().text_size(11.5).text_color(t.dim).truncate().child(text));
+  }
+
+  gallery(title, extra, cards, t, empty) {
+    return v_flex().gap(12)
+      .when(Boolean(title), (el) => el.child(h_flex().gap(8).items_baseline()
+        .child(div().text_size(15).font_semibold().text_color(t.foreground).child(title))
+        .when(Boolean(extra), (x) => x.child(div().text_size(12).text_color(t.dim).child(extra)))))
+      .child(cards.length ? h_flex().flex_wrap().items_start().gap(14).children(cards)
+        : div().text_size(12.5).text_color(t.dim).child(empty));
+  }
+
+  appCard(app, t) {
     const r = this.liveApp(app);
     const busy = this.pending.has(app.id);
-    const state = busy ? "busy" : r ? (this.ready.has(r.address) ? "running" : "starting") : "stopped";
-    const url = r ? urlFor(app.machine, r.port, app.path) : null;
-    const portText = r ? url.replace(/^http:\/\//, "") : app.port ? `port ${app.port}` : "any free port";
+    const ready = r && this.ready.has(r.address);
     const deleting = this.armed === `del:${app.id}`;
-    const actions = [
-      r ? this.button(`stop-${app.id}`, "pause", "Stop", (cx) => this.stopApp(r, app.id, cx), t)
-        : this.button(`start-${app.id}`, "play", "Start", (cx) => this.start(app, cx), t, "accent"),
-      r && this.button(`open-${app.id}`, "external", "Open", () => openInChrome(url), t),
-      r && this.button(`logs-${app.id}`, "logs", null, () => run("terminal.peek", { terminal: r.address }), t),
-      this.button(`edit-${app.id}`, "pencil", null, () => this.edit("app", app), t),
+    const key = `app:${app.id}`;
+    const badges = [
+      r ? this.badge(ready ? `running · ${app.machine ?? "localhost"}:${r.port}` : `starting on port ${r.port}…`, t, ready ? t.done : t.working)
+        : this.badge(app.port ? `port ${app.port}` : "any free port", t),
+    ];
+    const buttons = [
+      r && this.button(`open-${app.id}`, "external", "Open", (cx) => this.open(app.machine, r.port, app.path, app.id, cx), t, "accent"),
+      r && this.button(`logs-${app.id}`, "logs", "Logs", () => run("terminal.peek", { terminal: r.address }), t),
+      this.button(`edit-${app.id}`, "pencil", "Edit", () => this.edit("app", app), t),
       deleting
         ? this.button(`del-${app.id}`, "x", "Remove?", (cx) => this.remove("apps", app.id, cx), t, "danger")
         : this.button(`del-${app.id}`, "x", null, (cx) => { this.armed = `del:${app.id}`; cx.notify(); }, t),
     ].filter(Boolean);
-    return this.row(`app-${app.id}`, state, app.name, app.machine ?? null, `${tilde(app.folder)} · ${app.command}`, portText, actions, t);
+    return this.card(`app-${app.id}`, {
+      key, title: app.name, sub: this.subline(app.machine ?? null, tilde(app.folder), t),
+      description: app.notes || app.command, badges, buttons,
+      toggle: this.toggle(app.id, Boolean(r), busy, r ? "Stop it" : "Start it", (cx) => (r ? this.stopIt(r, app.id, cx) : this.start(app, cx)), t),
+      retake: ready ? (cx) => this.takeShot(key, () => reach(app.machine, r.port, this.live).then((u) => u + (app.path ?? "/")), cx) : null,
+      dim: !r,
+    }, t);
   }
 
-  discoverRow(p, t) {
-    const saved = this.registry.apps.some((a) => (a.machine ?? null) === p.machine && a.folder === p.cwd);
+  discoverCard(p, t) {
+    const saved = this.registry.apps.find((a) => (a.machine ?? null) === p.machine && a.folder === p.cwd);
     const ours = this.live.some((r) => r.machine === p.machine && p.ports.includes(r.port));
     const looking = this.investigating.has(p.id);
-    const actions = [
-      p.http.length > 0 && this.button(`dopen-${p.id}`, "external", "Open", () => openInChrome(urlFor(p.machine, p.http[0])), t),
-      ours ? null : saved
-        ? div().text_size(11).text_color(t.dim).child("saved")
-        : this.button(`dsave-${p.id}`, looking ? "spinner" : "sparkle", looking ? "Working it out…" : "Save as app", (cx) => { if (!looking) this.save(p, cx); }, t, "accent"),
+    const key = `disc:${p.machine ?? "local"}:${p.port}`;
+    const badges = [
+      ...p.ports.map((x) => this.badge(p.http.includes(x) ? `port ${x}` : `port ${x} · not http`, t, p.http.includes(x) ? t.foreground : t.dim)),
+      p.machine && p.http.length > 0 && !p.direct && this.badge(`only on ${p.machine}: opens through ssh`, t),
+      ours && this.badge("started from here", t, t.done),
+      saved && !ours && this.badge(`saved as ${saved.name}`, t, t.accent),
     ].filter(Boolean);
-    const ports = p.ports.map((x) => (p.http.includes(x) ? `${x}` : `${x} (not http)`)).join(", ");
-    return this.row(`disc-${p.id}`, ours ? "running" : "stopped", tilde(p.cwd), p.machine, p.args, `port ${ports}`, actions, t);
+    const buttons = [
+      p.http.length > 0 && this.button(`dopen-${p.id}`, this.pending.has(p.id) ? "spinner" : "external", "Open", (cx) => this.open(p.machine, p.http[0], "/", p.id, cx), t),
+      !ours && !saved && this.button(`dsave-${p.id}`, looking ? "spinner" : "sparkle", looking ? "Working it out…" : "Save as app", (cx) => { if (!looking) this.save(p, cx); }, t, "accent"),
+    ].filter(Boolean);
+    return this.card(`disc-${p.id}`, {
+      key, title: p.cwd.split("/").pop(), sub: this.subline(p.machine, tilde(p.cwd), t), description: p.args, badges, buttons,
+      retake: p.http.length > 0 ? (cx) => this.takeShot(key, () => reach(p.machine, p.http[0], this.live), cx) : null,
+      placeholder: p.http.length ? null : "server",
+    }, t);
   }
 
-  htmlRow(item, t) {
+  htmlCard(item, t) {
     const r = item.machine ? this.liveHtml(item) : null;
     const busy = this.pending.has(item.id);
-    const name = item.main.split("/").pop();
-    const more = item.files.length > 1 ? ` · +${item.files.length - 1} more` : "";
-    const actions = [
-      this.button(`hopen-${item.id}`, busy ? "spinner" : "external", "Open", (cx) => this.openHtml(item, cx), t),
-      r && this.button(`hstop-${item.id}`, "pause", "Stop server", (cx) => this.stopApp(r, item.id, cx), t),
+    const key = `html:${item.id}`;
+    const more = item.files.length > 1 ? [this.badge(`+${item.files.length - 1} more file${item.files.length > 2 ? "s" : ""}`, t)] : [];
+    const buttons = [
+      this.button(`hopen-${item.id}`, busy ? "spinner" : "external", "Open", (cx) => this.openHtml(item, cx), t, "accent"),
+      r && this.button(`hstop-${item.id}`, "pause", "Stop server", (cx) => this.stopIt(r, item.id, cx), t),
     ].filter(Boolean);
-    return this.row(`html-${item.id}`, busy ? "busy" : r ? "running" : "stopped", name, item.machine, `${tilde(item.dir)}${more}`, since(item.mtime), actions, t);
+    return this.card(`html-${item.id}`, {
+      key, title: item.main.split("/").pop(), sub: this.subline(item.machine, since(item.mtime), t), description: tilde(item.dir),
+      badges: [...more, ...(r ? [this.badge(`served on port ${r.port}`, t, t.done)] : [])], buttons,
+      retake: !item.machine ? (cx) => this.takeShot(key, `file://${item.main}`, cx) : null,
+      placeholder: "file",
+    }, t);
   }
 
-  linkRow(link, t) {
+  linkCard(link, t) {
     const deleting = this.armed === `del:${link.id}`;
-    const actions = [
-      this.button(`lopen-${link.id}`, "external", "Open", () => openInChrome(link.url), t),
-      this.button(`ledit-${link.id}`, "pencil", null, () => this.edit("link", link), t),
+    const buttons = [
+      this.button(`lopen-${link.id}`, "external", "Open", () => openInChrome(link.url), t, "accent"),
+      this.button(`ledit-${link.id}`, "pencil", "Edit", () => this.edit("link", link), t),
       deleting
         ? this.button(`ldel-${link.id}`, "x", "Remove?", (cx) => this.remove("links", link.id, cx), t, "danger")
         : this.button(`ldel-${link.id}`, "x", null, (cx) => { this.armed = `del:${link.id}`; cx.notify(); }, t),
     ];
-    return this.row(`link-${link.id}`, "stopped", link.name, undefined, link.url, "", actions, t);
+    return this.card(`link-${link.id}`, {
+      title: link.name, sub: div().text_size(11.5).text_color(t.dim).truncate().child(link.url.replace(/^https?:\/\//, "")),
+      buttons, placeholder: "link",
+    }, t);
+  }
+
+  body(t) {
+    if (this.tab === "discover") {
+      const list = Object.values(this.listeners).flat().sort((a, b) => (b.http.length > 0) - (a.http.length > 0));
+      return this.gallery(null, null, list.map((p) => this.discoverCard(p, t)), t, "Nothing is listening on your machines right now.");
+    }
+    if (this.tab === "artifacts") {
+      const html = Object.values(this.html).flat().sort((a, b) => b.mtime - a.mtime);
+      return v_flex().gap(28)
+        .child(this.gallery("Pinned", "claude.ai artifacts and other links", this.registry.links.map((l) => this.linkCard(l, t)), t, "Nothing pinned yet. Pin a link from claude.ai."))
+        .child(this.gallery("From Claude sessions", "HTML that sessions wrote in the last 30 days", html.map((h) => this.htmlCard(h, t)), t, "No HTML files from Claude sessions found."));
+    }
+    return this.gallery(null, null, this.registry.apps.map((a) => this.appCard(a, t)), t,
+      "No apps yet. Add one, or find a running one under Discover and save it.");
+  }
+
+  actions(t) {
+    if (this.tab === "apps") return [this.primary("add-app", "plus", "Add app", () => this.edit("app", null), t)];
+    if (this.tab === "artifacts") return [
+      this.button("open-claude-artifacts", "external", "claude.ai/artifacts", () => openInChrome("https://claude.ai/artifacts"), t),
+      this.primary("pin-link", "link", "Pin link", () => this.edit("link", null), t),
+    ];
+    return [];
   }
 
   render(cx) {
@@ -290,31 +435,16 @@ export default class Artifacts extends View {
     }
     this.wasShown = visible;
     const t = theme();
-    const apps = this.registry.apps;
-    const listeners = Object.values(this.listeners).flat();
-    const html = Object.values(this.html).flat().sort((a, b) => b.mtime - a.mtime);
-    const up = apps.filter((a) => this.liveApp(a)).length;
     return v_flex().size_full().min_h(0).bg(t.canvas)
       .child(h_flex().h(42).flex_none().px(20).gap(10).items_center().bg(t.chrome).border_b_1().border_color(t.border)
         .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Artifacts"))
-        .child(div().text_size(12).text_color(t.dim).child("Apps on every machine, and what Claude made"))
+        .child(this.tabs(t))
         .child(div().flex_1())
-        .child(this.primary("add-app", "plus", "Add app", () => this.edit("app", null), t))
-        .child(this.button("pin-link", "link", "Pin link", () => this.edit("link", null), t))
+        .children(this.actions(t))
         .child(this.button("refresh", "reset", "Refresh", (cx) => this.refresh(cx, true), t)))
       .when(Boolean(this.error), (el) => el.child(div().px(20).py(6).text_size(12).text_color(t.blocked).child(this.error)))
       .child(div().id("artifacts-scroll").flex_1().min_h(0).overflow_y_scrollbar()
-        .child(v_flex().gap(16).p(16)
-          .child(this.card("apps", "server", "Apps", apps.length ? `${up} of ${apps.length} running` : "", [],
-            apps.length ? apps.map((a) => this.appRow(a, t)) : [this.empty("No apps yet. Add one, or save a running one from Discover.", t)], t))
-          .child(this.card("discover", "search", "Discover", `${listeners.length} servers listening on your machines`, [],
-            listeners.length ? listeners.map((p) => this.discoverRow(p, t)) : [this.empty("Nothing listening right now.", t)], t))
-          .child(this.card("claude", "sparkle", "Claude artifacts", "Pinned claude.ai links and HTML that sessions wrote in the last 30 days",
-            [this.button("open-claude-artifacts", "external", "claude.ai/artifacts", () => openInChrome("https://claude.ai/artifacts"), t)],
-            [
-              ...this.registry.links.map((l) => this.linkRow(l, t)),
-              ...(html.length ? html.map((h) => this.htmlRow(h, t)) : [this.empty("No HTML files from Claude sessions found.", t)]),
-            ], t))));
+        .child(div().p(20).child(this.body(t))));
   }
 
   // The add/edit dialog, a second copy of this mod opened as an overlay.
