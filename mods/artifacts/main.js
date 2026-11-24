@@ -2,7 +2,7 @@ import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { appHome, checking, closeOverlay, exec, layout, machines, notify, openOverlay, props, run, setShared, shared, theme } from "herdr";
 import {
-  HTML, LISTEN, capture, freePort, hash, investigate, launch, runStop, stopProcs, loadRegistry, openInChrome, parseHtml, parseListeners,
+  HTML, LISTEN, capture, freePort, hash, installService, investigate, launch, runStop, stopProcs, systemctl, unitStates, loadRegistry, openInChrome, parseHtml, parseListeners,
   probe, reach, reachable, running, sh, slug, stop, updateRegistry, urlFor,
 } from "./data.js";
 
@@ -54,6 +54,7 @@ export default class Artifacts extends View {
     this.live = [];
     this.ready = new Set();
     this.listeners = {};
+    this.units = {};
     this.html = {};
     this.pending = new Set();
     this.investigating = new Set();
@@ -79,6 +80,11 @@ export default class Artifacts extends View {
         const ready = new Set();
         await Promise.all(live.filter((r) => r.kind !== "tunnel").map(async (r) => { if (await probe(r.machine, r.port)) ready.add(r.address); }));
         this.ready = ready;
+        await Promise.all(online().map(async (m) => {
+          const k = m.name ?? "local";
+          const units = [...new Set(this.registry.apps.filter((a) => (a.machine ?? null) === (m.name ?? null) && a.service).map((a) => a.service))];
+          this.units[k] = await unitStates(m.name, units).catch(() => this.units[k] ?? { systemd: false, states: {} });
+        }));
         this.autoShots(cx);
       } catch (e) {
         this.error = String(e?.message ?? e);
@@ -99,6 +105,7 @@ export default class Artifacts extends View {
           const found = parseListeners(l.stdout, m.name);
           await Promise.all(found.map(async (p) => { p.direct = !m.name || (p.http.length > 0 && (await reachable(urlFor(m.name, p.port)))); }));
           this.listeners[k] = found;
+          this.adopt();
         }
         if (h) this.html[k] = parseHtml(h.stdout, m.name);
         this.autoShots(cx);
@@ -135,9 +142,10 @@ export default class Artifacts extends View {
   // Running apps once per run and local HTML when there's no picture yet (or the file changed).
   autoShots(cx) {
     for (const app of this.registry.apps) {
-      const r = this.liveApp(app);
+      const svc = this.service(app);
+      const r = svc ? null : this.liveApp(app);
       const ext = r ? null : this.outside(app);
-      const port = r && this.ready.has(r.address) ? r.port : ext?.http[0];
+      const port = r && this.ready.has(r.address) ? r.port : svc && !svc.on ? null : ext?.http[0];
       const key = `app:${app.id}`;
       const fresh = shots()[key]?.v === SHOT_V;
       if (port && !this.shotThisRun.has(key) && (r || !fresh)) this.takeShot(key, () => reach(app.machine, port, this.live).then((u) => u + (app.path ?? "/")), cx);
@@ -152,6 +160,61 @@ export default class Artifacts extends View {
 
   liveApp(app) {
     return this.live.find((r) => r.kind === "app" && r.id === app.id && r.machine === (app.machine ?? null));
+  }
+
+  // Saved apps found running as a systemd user service remember it, so the switch can start it again.
+  adopt() {
+    const found = this.registry.apps.filter((a) => !a.service).map((a) => [a.id, this.outside(a)?.procs.find((p) => p.unit)?.unit]).filter(([, u]) => u);
+    if (found.length) updateRegistry((d) => {
+      for (const [id, unit] of found) { const a = d.apps.find((x) => x.id === id); if (a && !a.service) a.service = unit; }
+    }).catch(() => null);
+  }
+
+  service(app) {
+    if (!app.service) return null;
+    const s = this.units[app.machine ?? "local"]?.states[app.service];
+    return { unit: app.service, on: /^(active|activating|reloading)$/.test(s?.active ?? ""), failed: s?.active === "failed", enabled: s?.enabled === "enabled", known: Boolean(s) };
+  }
+
+  // Herdr's own services are rewritten from the saved command on every start, so edits apply.
+  startService(app, cx) {
+    this.busy(app.id, cx, async () => {
+      if (app.service.startsWith("herdr-app-")) await installService(app, app.port);
+      await systemctl(app.machine, "start", app.service);
+      this.shotThisRun.delete(`app:${app.id}`);
+    });
+  }
+
+  // On: becomes (or stays) a systemd service that is enabled, so it restarts when it dies and starts at boot. Off: disabled.
+  survive(app, on, cx) {
+    this.busy(`svc:${app.id}`, cx, async () => {
+      if (app.service) return systemctl(app.machine, on ? "enable" : "disable", app.service);
+      if (!on) return;
+      const r = this.liveApp(app);
+      const ext = r ? null : this.outside(app);
+      const port = app.port ?? r?.port ?? ext?.http[0] ?? (await freePort(app.machine));
+      const unit = await installService(app, port);
+      if (r) {
+        if (app.stop) await runStop(app, r.port).catch(() => null);
+        await stop(r.address);
+      } else if (ext) {
+        if (app.stop) await runStop(app, port); else await stopProcs(ext.machine, ext.procs);
+      }
+      await systemctl(app.machine, "enable", unit);
+      if (r || ext) await systemctl(app.machine, "start", unit);
+      await updateRegistry((d) => { const a = d.apps.find((x) => x.id === app.id); if (a) { a.service = unit; a.port = port; } });
+    });
+  }
+
+  checkbox(id, on, busy, label, tip, onClick, t) {
+    return h_flex().id(`check-${id}`).gap(6).items_center().pt(2).text_size(11.5).text_color(t.muted)
+      .when(!busy, (el) => el.cursor_pointer().on_click((_e, cx) => { cx.stop_propagation(); onClick(cx); }))
+      .when(busy, (el) => el.opacity(0.5))
+      .tooltip(tip)
+      .child(div().size(13).flex_none().rounded(3).border_1().border_color(on ? t.accent : t.border).bg(on ? t.accent : t.background)
+        .flex().items_center().justify_center()
+        .when(on, (el) => el.child(div().text_size(9).text_color("#ffffff").child("✓"))))
+      .child(label);
   }
 
   // A discovered server running out of the app's folder that Herdr didn't start.
@@ -311,7 +374,7 @@ export default class Artifacts extends View {
   }
 
   // A Plugins-style card: picture on top, then title, switch, description, badges and buttons.
-  card(id, { key, title, sub, description, badges, toggle, buttons, placeholder, retake, dim, picture: show = true }, t) {
+  card(id, { key, title, sub, description, badges, extra, toggle, buttons, placeholder, retake, dim, picture: show = true }, t) {
     const path = key ? this.shot(key) : null;
     const taking = key && shooting.has(key);
     const picture = div().h(168).w_full().flex_none().bg(t.background).border_b_1().border_color(t.border).overflow_hidden()
@@ -331,6 +394,7 @@ export default class Artifacts extends View {
           .when(Boolean(toggle), (el) => el.child(toggle)))
         .when(Boolean(description), (el) => el.child(typeof description === "string" ? div().text_size(12).text_color(t.muted).max_h(34).overflow_hidden().child(description) : description))
         .when(badges?.length > 0, (el) => el.child(h_flex().flex_wrap().gap(5).pt(2).children(badges)))
+        .when(Boolean(extra), (el) => el.child(extra))
         .when(buttons?.length > 0 || Boolean(retake), (el) => el.child(h_flex().pt(4).gap(5).flex_wrap()
           .children(buttons ?? [])
           .when(Boolean(retake), (x) => x.child(div().flex_1()).child(this.button(`shot-${id}`, taking ? "spinner" : "camera", null, retake, t))))));
@@ -352,18 +416,24 @@ export default class Artifacts extends View {
   }
 
   appCard(app, t) {
-    const r = this.liveApp(app);
+    const svc = this.service(app);
+    const r = svc ? null : this.liveApp(app);
     const ext = r ? null : this.outside(app);
     const busy = this.pending.has(app.id);
     const ready = r && this.ready.has(r.address);
     const deleting = this.armed === `del:${app.id}`;
     const key = `app:${app.id}`;
-    const port = r?.port ?? ext?.http[0];
+    const where = app.machine ?? "localhost";
+    const on = svc ? svc.on : Boolean(r || ext);
+    const port = r?.port ?? (on ? ext?.http[0] ?? app.port : null);
     const badges = [
-      r ? this.badge(ready ? `running · ${app.machine ?? "localhost"}:${r.port}` : `starting on port ${r.port}…`, t, ready ? t.done : t.working)
-        : ext ? this.badge(`running outside Herdr · ${app.machine ?? "localhost"}:${ext.ports.join(", ")}`, t, t.done)
+      svc ? (svc.on ? this.badge(`running · ${where}:${port ?? "?"}`, t, t.done)
+        : svc.failed ? this.badge(`${svc.unit} failed`, t, t.blocked) : this.badge(app.port ? `port ${app.port}` : "stopped", t))
+        : r ? this.badge(ready ? `running · ${where}:${r.port}` : `starting on port ${r.port}…`, t, ready ? t.done : t.working)
+        : ext ? this.badge(`running outside Herdr · ${where}:${ext.ports.join(", ")}`, t, t.done)
         : this.badge(app.port ? `port ${app.port}` : "any free port", t),
-    ];
+      svc && this.badge(svc.unit, t),
+    ].filter(Boolean);
     const buttons = [
       port && this.button(`open-${app.id}`, "external", "Open", (cx) => this.open(app.machine, port, app.path, app.id, cx), t, "accent"),
       r && this.button(`logs-${app.id}`, "logs", "Logs", () => run("terminal.peek", { terminal: r.address }), t),
@@ -372,15 +442,23 @@ export default class Artifacts extends View {
         ? this.button(`del-${app.id}`, "x", "Remove?", (cx) => this.remove("apps", app.id, cx), t, "danger")
         : this.button(`del-${app.id}`, "x", null, (cx) => { this.armed = `del:${app.id}`; cx.notify(); }, t),
     ].filter(Boolean);
-    const what = app.stop || (ext && stopWhat(ext));
-    const tip = r ? "Stop it" : ext ? `Stop it (${what})` : "Start it";
-    const flip = (cx) => (r ? this.stopIt(r, app.id, cx, app) : ext ? this.stopOutside(app, ext, cx) : this.start(app, cx));
+    const tip = svc ? `${on ? "Stop" : "Start"} it (systemctl --user ${on ? "stop" : "start"} ${svc.unit})`
+      : r ? "Stop it" : ext ? `Stop it (${app.stop || stopWhat(ext)})` : "Start it";
+    const flip = (cx) => svc
+      ? (on ? this.busy(app.id, cx, () => systemctl(app.machine, "stop", svc.unit)) : this.startService(app, cx))
+      : r ? this.stopIt(r, app.id, cx, app) : ext ? this.stopOutside(app, ext, cx) : this.start(app, cx);
+    const systemd = this.units[app.machine ?? "local"]?.systemd;
+    const survives = Boolean(svc?.enabled);
+    const extra = systemd && this.checkbox(`svc-${app.id}`, survives, this.pending.has(`svc:${app.id}`), "Survive restarts",
+      svc ? `${survives ? "Disable" : "Enable"} ${svc.unit}: when enabled it starts when ${where} boots`
+        : `Run it as a systemd service on ${where} that restarts when it dies and starts at boot`,
+      (cx) => this.survive(app, !survives, cx), t);
     return this.card(`app-${app.id}`, {
       key, title: app.name, sub: this.subline(app.machine ?? null, tilde(app.folder), t),
-      description: app.notes || app.command, badges, buttons,
-      toggle: this.toggle(app.id, Boolean(r || ext), busy, tip, flip, t),
-      retake: ready || ext?.http.length ? (cx) => this.takeShot(key, () => reach(app.machine, port, this.live).then((u) => u + (app.path ?? "/")), cx) : null,
-      dim: !r && !ext,
+      description: app.notes || app.command, badges, buttons, extra,
+      toggle: this.toggle(app.id, on, busy, tip, flip, t),
+      retake: port && (ready || on) ? (cx) => this.takeShot(key, () => reach(app.machine, port, this.live).then((u) => u + (app.path ?? "/")), cx) : null,
+      dim: !on,
     }, t);
   }
 

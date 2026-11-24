@@ -166,6 +166,56 @@ export async function stopProcs(machine, procs) {
   for (const p of procs.filter((p) => p.docker)) await sh('docker compose -p "$1" stop', [p.docker], machine, 120000);
 }
 
+// systemd user services. Exit 3: no systemd on that machine.
+const UNIT_STATE = `command -v systemctl >/dev/null || exit 3
+for u in "$@"; do printf '%s\t%s\t%s\n' "$u" "$(systemctl --user is-active "$u" 2>/dev/null)" "$(systemctl --user is-enabled "$u" 2>/dev/null)"; done`;
+
+export async function unitStates(machine, units) {
+  const r = await sh(UNIT_STATE, units, machine);
+  if (r.code === 3) return { systemd: false, states: {} };
+  const states = {};
+  for (const line of r.stdout.split("\n")) {
+    const [unit, active, enabled] = line.split("\t");
+    if (unit) states[unit] = { active, enabled };
+  }
+  return { systemd: r.code === 0, states };
+}
+
+export async function systemctl(machine, ...args) {
+  const r = await sh('systemctl --user "$@"', args, machine, 120000);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || `systemctl ${args.join(" ")} failed`);
+}
+
+const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+const INSTALL = `set -e
+d="$HOME/.local/share/herdr-apps"; u="$HOME/.config/systemd/user"
+mkdir -p "$d" "$u"
+printf '%s' "$2" > "$d/$1.sh"; chmod +x "$d/$1.sh"
+rm -f "$d/$1-stop.sh"
+if [ -n "$3" ]; then printf '%s' "$3" > "$d/$1-stop.sh"; chmod +x "$d/$1-stop.sh"; fi
+printf '%s' "$4" > "$u/herdr-app-$1.service"
+systemctl --user daemon-reload`;
+
+// Writes a user service that runs the app's command like Herdr does (login shell, folder, $PORT) and restarts it when it dies.
+export async function installService(app, port) {
+  const wrap = (cmd) => `#!/bin/sh\ncd ${q(app.folder)} || exit 1\nexport PORT=${port}\nexec "$(getent passwd "$(id -un)" | cut -d: -f7)" -lic ${q(cmd)}\n`;
+  const unit = `[Unit]
+Description=${app.name} (Herdr app)
+After=network.target
+
+[Service]
+ExecStart=%h/.local/share/herdr-apps/${app.id}.sh
+${app.stop ? `ExecStop=%h/.local/share/herdr-apps/${app.id}-stop.sh\n` : ""}Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+`;
+  const r = await sh(INSTALL, [app.id, wrap(app.command), app.stop ? wrap(app.stop) : "", unit], app.machine);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || "couldn't write the service");
+  return `herdr-app-${app.id}.service`;
+}
+
 export const urlFor = (machine, port, path = "/") => `http://${machine ?? "localhost"}:${port}${path.startsWith("/") ? path : `/${path}`}`;
 export const openInChrome = (target) => exec("open", ["-a", "Google Chrome", target]);
 
