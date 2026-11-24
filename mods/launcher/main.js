@@ -35,9 +35,15 @@ export default class Launcher extends View {
     cx.timer.after(150, () => this.refocus());
     cx.timer.after(600, () => this.refocus());
     if (checking()) return;
+    // Herdr sends "focus" only for pane.go, not when closing a neighbour hands the pane focus back.
+    cx.timer.every(200, () => {
+      const now = this.isFocused();
+      if (now && !this.wasFocused) this.refocus();
+      this.wasFocused = now;
+    });
     cx.spawn(async (cx) => {
       for (;;) {
-        if ((await nextCommand()) === "focus") this.refocus();
+        if ((await nextCommand()) === "focus" && this.isFocused()) this.refocus();
         cx.notify();
       }
     });
@@ -67,6 +73,12 @@ export default class Launcher extends View {
 
   refocus() {
     this.keys.focus();
+  }
+
+  isFocused() {
+    if (this.mode === "space") return true;
+    const me = this.pane();
+    return Boolean(me) && focused()?.pane === me;
   }
 
   // panes() marks each tab's focused pane, so only the focused tab's launcher is this one.
