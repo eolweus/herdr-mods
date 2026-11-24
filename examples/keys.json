@@ -1,6 +1,7 @@
 {
   "global": {
     "cmd-q": "app.quit",
+    "cmd-g": "herdr-chat.edit",
     "cmd-h": "app.hide",
     "cmd-alt-h": "app.hide_others",
     "cmd-m": "window.minimize",
