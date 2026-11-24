@@ -1,0 +1,5 @@
+{
+  "place": "none",
+  "title": "Files",
+  "description": "Herdr's Files panel, plus previews of images and PDFs on any machine. Double-click a file, or ↗ on its preview, to open it in a tab, where nvim replaces the tab with the file in nvim."
+}

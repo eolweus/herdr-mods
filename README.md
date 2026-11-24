@@ -16,6 +16,7 @@ The script links each mod into `~/.config/herdr-app/mods` (or `$HERDR_APP_HOME/m
 Some mods need other tools:
 
 - **nvim sidebar** and **lazygit sidebar**: `nvim` and `lazygit` on your PATH.
+- **Files** renders PDFs with poppler's `pdftoppm` (`brew install poppler`).
 - **Spaces and agents** shows board handoffs when [herdr-chat](https://github.com/eolweus/herdr-chat) is running; without it the handoff section stays empty.
 - **Machines** and **Scheduler** reach other machines you've added to Herdr over ssh.
 
@@ -26,6 +27,10 @@ Some mods need other tools:
 - [herdr-nvim](https://github.com/eolweus/herdr-nvim): a full-height nvim sidebar for terminal Herdr.
 
 ## The mods
+
+### Files
+
+`mods/files-work`. Herdr's Files panel, plus previews of images and PDFs on any machine. Double-click a file to open it in a tab, where nvim replaces the tab with the file in nvim on the machine it's on.
 
 ### Folder picker
 
