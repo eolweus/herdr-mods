@@ -62,8 +62,9 @@ export default class Pane extends View {
     if (!p) return div();
     // Chat panes aren't terminals, so they report their folder and status through shared state.
     const chat = p.mod === "herdr-chat" ? shared(`herdr-chat:pane:${p.pane}`) ?? {} : null;
-    const name = chat ? "Claude" : ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
-    const pic = chat ? svg("icons/claude.svg").size(14).flex_none().text_color(t.accent) : icon(p.program, 14, t.dim);
+    const agy = chat?.backend === "agy";
+    const name = chat ? (agy ? "Antigravity" : "Claude") : ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || "shell";
+    const pic = agy ? image("icons/antigravity.svg").size(14).flex_none() : chat ? svg("icons/claude.svg").size(14).flex_none().text_color(t.accent) : icon(p.program, 14, t.dim);
     const st = chat ? chat.status : p.status;
     // Claude Code puts its session name in the terminal title.
     const session = chat ? chat.title : p.program?.agent && p.title && p.title !== p.program.name ? p.title.replace(/^[^\p{L}\p{N}]+/u, "") : null;

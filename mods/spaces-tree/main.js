@@ -85,6 +85,11 @@ export const urgent = (...list) => list.filter(Boolean).reduce((a, b) => ((RANK[
 
 export const claudeProgram = () => panes().find((p) => p.program?.key === "claude")?.program ?? { key: "claude", name: "Claude", icon: "icons/claude.svg", tint: true, agent: true };
 
+// herdr-chat publishes which agent runs each chat; Antigravity's logo is multicoloured, so it isn't tinted.
+export const chatProgram = (backend) => backend === "agy"
+  ? { key: "antigravity", name: "Antigravity", icon: "icons/antigravity.svg", tint: false, agent: true }
+  : claudeProgram();
+
 // herdr-chat panes are mods, not terminals, so Herdr doesn't count them; each publishes its status.
 function chatAgents(sp) {
   const where = new Map();
@@ -94,8 +99,8 @@ function chatAgents(sp) {
     const { space, tab } = where.get(p.tab);
     return {
       address: `chat:${p.pane}`, pane: p.pane, space, tab: tab.id, tab_name: tab.name, title: c.title ?? "",
-      status: c.status ?? "idle", focused: p.focused, app: "claude-code",
-      program: claudeProgram(),
+      status: c.status ?? "idle", focused: p.focused, app: c.backend === "agy" ? "antigravity" : "claude-code",
+      program: chatProgram(c.backend),
     };
   });
 }

@@ -152,7 +152,8 @@ export default class Tabs extends View {
     const item = (c, i) => {
       const chats = panes().filter(p => p.tab === c.id && p.mod === "herdr-chat");
       const lead = panes().find(p => p.tab === c.id && p.program?.agent) ?? panes().find(p => p.tab === c.id);
-      const program = lead?.program ?? (chats.length ? panes().find(p => p.program?.key === "claude")?.program ?? { icon: "icons/claude.svg", tint: true } : null);
+      const chat = chats.length ? shared(`herdr-chat:pane:${chats[0].pane}`) ?? {} : null;
+      const program = lead?.program ?? (!chat ? null : chat.backend === "agy" ? { icon: "icons/antigravity.svg", tint: false } : panes().find(p => p.program?.key === "claude")?.program ?? { icon: "icons/claude.svg", tint: true });
       c = { ...c, status: urgent(c.status, ...chats.map(p => shared(`herdr-chat:pane:${p.pane}`)?.status)) };
       const name = label(c, lead);
       const over = this.drag?.moving && this.drag.over?.i === i ? this.drag.over : null;
