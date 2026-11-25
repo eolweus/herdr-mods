@@ -293,8 +293,10 @@ export default class Machines extends View {
     ] };
   }
 
-  sessionsSection(m, s, list, home, t) {
+  sessionsSection(m, s, { list, pss }, home, t) {
     const k = this.key(m);
+    const mem = (p) => pss?.get(String(p.pid)) ?? p.rss;
+    const approx = pss ? "" : "≈ ";
     const kids = children(s);
     const tree = (pid) => {
       const out = [];
@@ -318,7 +320,7 @@ export default class Machines extends View {
         r, proc, procs, where, chat,
         busy: r.status === "busy",
         title: r.name || chat?.info?.title || project(r.cwd),
-        mem: procs.reduce((n, p) => n + p.rss, proc.rss),
+        mem: procs.reduce((n, p) => n + mem(p), mem(proc)),
         cpu: procs.reduce((n, p) => n + p.cpu, proc.cpu),
         model: modelName(flag(proc.args, "model") ?? j?.model ?? chat?.info?.model),
         effort: flag(proc.args, "effort"),
@@ -333,11 +335,12 @@ export default class Machines extends View {
     const total = rows.reduce((n, x) => n + x.mem, 0);
     const working = rows.filter((x) => x.busy).length;
     const stale = rows.filter((x) => !x.busy && Date.now() - x.last > 86400000).length;
-    const extra = [`${rows.length} running`, working && `${working} working`, bytes(total), stale && `${stale} idle over a day`].filter(Boolean).join(" · ");
+    const extra = [`${rows.length} running`, working && `${working} working`, `${approx}${bytes(total)}`, stale && `${stale} idle over a day`].filter(Boolean).join(" · ");
 
     const head = h_flex().gap(12).px(10).pb(4).border_b_1().border_color(t.border)
       .child(this.cell(null, "Session", t, t.dim)).child(this.cell(120, "Model", t, t.dim))
-      .child(this.cell(84, "Context", t, t.dim)).child(this.cell(60, "Memory", t, t.dim))
+      .child(this.cell(84, "Context", t, t.dim)).child(this.cell(60, `${approx}Memory`, t, t.dim)
+        .id(`memory-head-${k}`).tooltip(pss ? "Shared memory split between the processes using it (PSS)" : "Counts memory that processes share in each of them (RSS), so it runs high"))
       .child(this.cell(52, "CPU", t, t.dim)).child(this.cell(76, "Active", t, t.dim));
     const row = (x) => {
       const id = `${k}:${x.r.pid}`;
@@ -365,7 +368,7 @@ export default class Machines extends View {
         const work = sub.filter((p) => !isShell(p)).sort((a, b) => b.rss - a.rss)[0];
         const name = isShell(c) ? (work ? describe(work) : "shell") : describe(c);
         const g = groups.get(name) ?? { name, rss: 0, cpu: 0, n: 0 };
-        for (const p of sub) { g.rss += p.rss; g.cpu += p.cpu; g.n += 1; }
+        for (const p of sub) { g.rss += mem(p); g.cpu += p.cpu; g.n += 1; }
         groups.set(name, g);
       }
       const proc = (name, n, rss, cpu) => h_flex().gap(12).py(2).items_center()
@@ -384,7 +387,7 @@ export default class Machines extends View {
           .child(div().flex_1().min_w(0).text_size(11).truncate().text_color(t.dim).child(`${short(x.r.cwd, home)} · ${facts}`))
           .when(Boolean(x.where.focus), (el) => el.child(div().id(`focus-${id}`).flex_none().text_size(11.5).text_color(t.accent).cursor_pointer()
             .hover((st) => st.opacity(0.8)).on_click(() => run("pane.focus", x.where.focus)).child("Show"))))
-        .child(proc("Claude Code", 1, x.proc.rss, x.proc.cpu))
+        .child(proc("Claude Code", 1, mem(x.proc), x.proc.cpu))
         .children([...groups.values()].sort((a, b) => b.rss - a.rss).slice(0, 10).map((g) => proc(g.name, g.n, g.rss, g.cpu)));
       return v_flex().rounded(6).bg(t.background).child(line).child(detail);
     };
@@ -424,7 +427,7 @@ export default class Machines extends View {
         .child(div().text_size(12).text_color(t.dim).truncate()
           .child(offline ? "offline" : s ? `${s.host} · ${s.os} · up ${ago(Date.now() / 1000 - s.boot)}` : err ? `unreachable: ${err}` : "reading…")));
 
-    const agentsPart = s ? (this.sessions[k]?.length ? this.sessionsSection(m, s, this.sessions[k], home, t) : null) ?? this.agentsSection(m, s, home, t) : null;
+    const agentsPart = s ? (this.sessions[k]?.list.length ? this.sessionsSection(m, s, this.sessions[k], home, t) : null) ?? this.agentsSection(m, s, home, t) : null;
     const body = !s ? [] : [
       h_flex().flex_wrap().gap(10)
         .child(this.gauge("CPU", s.cpu, `${Math.round(s.cpu)}%`, `${s.cores} cores · load ${s.load}`, t))

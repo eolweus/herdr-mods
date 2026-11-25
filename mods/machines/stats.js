@@ -187,8 +187,10 @@ export function children(stats) {
 
 // Claude Code registers each running CLI in ~/.claude/sessions/<pid>.json; the transcript's newest
 // assistant message gives the model, context size and branch. Read only while the Claude section is open.
+// Linux also gives each process's PSS, which shares memory out between the processes using it; RSS counts it in each.
 export const SESSIONS = String.raw`
 t=$(printf '\t')
+[ -r /proc/self/smaps_rollup ] && grep -H '^Pss:' /proc/[0-9]*/smaps_rollup 2>/dev/null | sed -n "s|^/proc/\([0-9]*\)/smaps_rollup:Pss: *\([0-9]*\).*|Q$t\1$t\2|p"
 for f in "$HOME"/.claude/sessions/*.json; do
   [ -f "$f" ] || continue
   printf 'R%s%s\n' "$t" "$(tr -d '\n' < "$f")"
@@ -208,15 +210,16 @@ done
 true`;
 
 export function parseSessions(stdout) {
-  const list = [], transcripts = {};
+  const list = [], transcripts = {}, pss = new Map();
   for (const line of stdout.split("\n")) {
     const f = line.split("\t");
-    if (f[0] === "R") {
+    if (f[0] === "Q") pss.set(f[1], Number(f[2]) * 1024);
+    else if (f[0] === "R") {
       try { list.push(JSON.parse(f.slice(1).join("\t"))); } catch {}
     } else if (f[0] === "J") {
       const n = (k) => Number(new RegExp(`"${k}":(\\d+)`).exec(f[5] ?? "")?.[1] ?? 0);
       transcripts[f[1]] = { mtime: Number(f[2]) * 1000, model: f[3] || null, branch: f[4] || null, context: n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens") };
     }
   }
-  return list.map((r) => ({ ...r, transcript: transcripts[r.sessionId] ?? null }));
+  return { list: list.map((r) => ({ ...r, transcript: transcripts[r.sessionId] ?? null })), pss: pss.size ? pss : null };
 }
