@@ -3,7 +3,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { agents, spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile, nextCommand } from "herdr";
-import { Handoffs, HANDOFF, isHandoffKey, closing, markDone } from "./handoffs.js";
+import { Handoffs, HANDOFF, kindColor, isHandoffKey, closing, markDone } from "./handoffs.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -317,40 +317,51 @@ export default class Spaces extends View {
     const focused = Boolean(pane) && this.htree.ps.find((p) => p.pane === pane)?.focused;
     const mc = machineColor(h.machine) ?? t.dim;
     const machine = this.handoffs.label(h.machine);
+    const kc = kindColor(h);
     // A handoff that replied and was then given more work is busy again until that turn ends.
     const busy = h.status === "working" || h.status === "blocked";
     const finished = Boolean(h.result) && !busy;
+    const asking = h.report?.status === "blocked" && !busy;
     const title = h.title || h.name || h.id;
+    const note = h.kind !== "once" && !finished && h.report?.note ? h.report.note : null;
     const shutting = Boolean(closing()[h.id]);
     const hovered = this.overHandoff === h.key;
     const end = shutting
       ? div().flex_none().text_size(11.5).text_color(t.dim).child(h.status === "working" ? "Closing after this turn…" : "Closing…")
       : hovered
         ? div().id(`handoff-done-${machine}-${h.key}`).flex_none().px(6).h(18).rounded(5).flex().items_center().gap(3)
-          .bg(HANDOFF + "33").text_color(HANDOFF).text_size(11).font_semibold().hover((s) => s.bg(HANDOFF + "55"))
+          .bg(kc + "33").text_color(kc).text_size(11).font_semibold().hover((s) => s.bg(kc + "55"))
           .tooltip("Mark done: close this handoff's session (after its current turn)")
           .on_click((_e, cx) => { cx.stop_propagation(); markDone(h); cx.notify(); })
           .child("✓ Done")
+      : asking
+        ? div().flex_none().px(5).h(16).rounded(4).flex().items_center().bg(t.blocked + "26").text_color(t.blocked).text_size(10.5).font_semibold().child("Asks")
       : finished && h.result === "failed"
-      ? div().flex_none().text_size(12).font_bold().text_color(t.ansi1).child("✗")
+        ? div().flex_none().text_size(12).font_bold().text_color(t.ansi1).child("✗")
       : finished && h.result === "done"
-        ? div().flex_none().text_size(12).font_bold().text_color(HANDOFF).child("✓")
+        ? div().flex_none().text_size(12).font_bold().text_color(kc).child("✓")
         : this.agentStatus(t, h.status === "idle" ? "idle" : h.status);
-    return h_flex().id(`space-handoff-${machine}-${h.key}`).relative().h(26).flex_none().ml(20 + depth * 16).pl(10).pr(8).gap(6).items_center().rounded(7)
-      .bg(HANDOFF + (focused ? "33" : "14"))
-      .hover((s) => s.bg(HANDOFF + "2a").text_color(t.foreground))
+    const kind = h.kind === "orchestrated" ? "Orchestrated handoff" : h.kind === "standalone" ? "Standalone handoff" : "Handoff";
+    const reported = h.report ? `\nLast report (${h.report.status}): ${h.report.note}` : "";
+    const line = h_flex().h(26).gap(6).items_center()
+      .child(div().flex_none().text_size(14).font_bold().text_color(kc).child("⤷"))
+      .child(div().flex_none().px(5).h(16).rounded(4).flex().items_center().bg(mc + "26").text_color(mc).text_size(10.5).font_semibold().child(machine))
+      .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(focused ? t.foreground : t.muted).child(title))
+      .child(end);
+    return v_flex().id(`space-handoff-${machine}-${h.key}`).relative().flex_none().ml(20 + depth * 16).pl(10).pr(8).rounded(7)
+      .when(Boolean(note), (el) => el.pb(5))
+      .bg(kc + (focused ? "33" : "14"))
+      .hover((s) => s.bg(kc + "2a").text_color(t.foreground))
       .when(finished || shutting, (el) => el.opacity(shutting ? 0.45 : 0.6))
       .on_hover((over, cx) => {
         const next = over ? h.key : this.overHandoff === h.key ? null : this.overHandoff;
         if (next !== this.overHandoff) { this.overHandoff = next; cx.notify(); }
       })
-      .tooltip(`Handoff ${h.id} · running on ${machine}${h.result ? ` · ${h.result}` : ""}${h.name && h.name !== title ? `\n${h.name}` : ""}`)
+      .tooltip(`${kind} ${h.id} · running on ${machine}${h.result ? ` · ${h.result}` : ""}${h.name && h.name !== title ? `\n${h.name}` : ""}${reported}`)
       .on_click(() => this.openHandoff(h, from))
-      .child(div().absolute().left(0).top(5).bottom(5).w(2).rounded(1).bg(HANDOFF))
-      .child(div().flex_none().text_size(14).font_bold().text_color(HANDOFF).child("⤷"))
-      .child(div().flex_none().px(5).h(16).rounded(4).flex().items_center().bg(mc + "26").text_color(mc).text_size(10.5).font_semibold().child(machine))
-      .child(div().flex_1().min_w(0).truncate().text_size(12.5).text_color(focused ? t.foreground : t.muted).child(title))
-      .child(end);
+      .child(div().absolute().left(0).top(5).bottom(5).w(2).rounded(1).bg(kc))
+      .child(line)
+      .when(Boolean(note), (el) => el.child(div().pl(20).truncate().text_size(11).text_color(asking ? t.blocked : t.dim).child(note)));
   }
 
   rootRows(list, t) {

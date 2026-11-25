@@ -3,6 +3,9 @@
 import { appHome, exec, home, machines, notify, panes, readTextFile, setShared, shared } from "herdr";
 
 export const HANDOFF = "#a970ff";
+// One-off handoffs are purple, orchestrated ones teal, and standalone ones (the person's own) neutral.
+const KIND_COLORS = { orchestrated: "#22a99a", standalone: "#8c929c" };
+export const kindColor = (h) => KIND_COLORS[h?.kind] ?? HANDOFF;
 const PORT = 7777;
 // A machine that stops answering keeps its last list this long, so a blip doesn't drop rows.
 const KEEP_MS = 30000;
@@ -74,10 +77,10 @@ export class Handoffs {
     const kept = Object.fromEntries(Object.entries(marks).filter(([id, at]) => Date.now() - at < CLOSING_MS && list.some((h) => h.id === id)));
     if (Object.keys(kept).length !== Object.keys(marks).length) setShared("handoffs.closing", kept);
     const ps = panes();
-    const json = JSON.stringify(list.map(({ key, machine, id, title, name, status, result, from, cwd }) => {
+    const json = JSON.stringify(list.map(({ key, machine, id, title, name, status, result, from, cwd, kind, report }) => {
       const up = this.parent({ from }, ps);
       const fromMachine = this.machineOf(String(from ?? "").split("/")[0]);
-      return { key, machine, id, title, name, status, result, from, cwd, label: this.label(machine), fromMachine, fromLabel: this.label(fromMachine), parent: up?.pane ?? null, parentKey: up?.handoff?.key ?? null };
+      return { key, machine, id, title, name, status, result, from, cwd, kind: kind ?? "once", report: report ?? null, label: this.label(machine), fromMachine, fromLabel: this.label(fromMachine), parent: up?.pane ?? null, parentKey: up?.handoff?.key ?? null };
     }));
     if (json !== this.shared) { this.shared = json; setShared("handoffs", JSON.parse(json)); }
     return list;
