@@ -5,6 +5,7 @@ import { checking, closeOverlay, exec, focused, home, machines, nextCommand, ope
 const ACTIONS = [
   ["t", "Terminal", "A shell in this folder"],
   ["c", "Claude", "A Claude chat in this folder"],
+  ["a", "Antigravity", "An Antigravity (Gemini) chat in this folder"],
   ["f", "Folder", "Pick another folder first"],
 ];
 const BROWSER = ["b", "Browser", "A web browser (terminal-browser)"];
@@ -155,11 +156,11 @@ export default class Launcher extends View {
     run("pane.close", { pane: me });
   }
 
-  newSpace(cx, chat) {
+  newSpace(cx, chat, backend) {
     const before = new Set(spaces().map((s) => s.id));
     run("space.new", { folder: this.cwd ?? undefined, machine: this.machine ?? "" });
     if (!chat) return closeOverlay(props().overlay);
-    run("tab.new", { mod: "herdr-chat", props: this.chatProps() });
+    run("tab.new", { mod: "herdr-chat", props: this.chatProps(backend) });
     // space.new always starts with a shell tab; once the space shows up, drop it so only the chat remains.
     cx.timer.after(400, () => {
       const made = spaces().find((s) => !before.has(s.id));
@@ -170,9 +171,9 @@ export default class Launcher extends View {
     });
   }
 
-  chatProps() {
+  chatProps(backend) {
     const key = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-    return { cwd: this.cwd, machine: this.machine, key };
+    return { cwd: this.cwd, machine: this.machine, key, ...(backend ? { backend } : {}) };
   }
 
   terminal(cx) {
@@ -183,10 +184,10 @@ export default class Launcher extends View {
       : run("pane.split", { pane: source, direction: this.direction }), () => this.fillTab(null));
   }
 
-  claude(cx) {
-    if (this.mode === "space") return this.newSpace(cx, true);
-    if (this.mode === "tab") return this.fillTab({ mod: "herdr-chat", props: this.chatProps() });
-    const chat = { mod: "herdr-chat", props: this.chatProps() };
+  claude(cx, backend) {
+    if (this.mode === "space") return this.newSpace(cx, true, backend);
+    if (this.mode === "tab") return this.fillTab({ mod: "herdr-chat", props: this.chatProps(backend) });
+    const chat = { mod: "herdr-chat", props: this.chatProps(backend) };
     this.replace((source) => run("pane.split", { pane: source, direction: this.direction, ...chat }), () => this.fillTab(chat));
   }
 
@@ -213,6 +214,7 @@ export default class Launcher extends View {
   act(k, cx) {
     if (k === "t") this.terminal(cx);
     else if (k === "c") this.claude(cx);
+    else if (k === "a") this.claude(cx, "agy");
     else if (k === "f") this.pickFolder();
     else if (k === "b" && this.canBrowse()) this.browser();
     else if (k === "m" && this.mode === "space") this.nextMachine(cx);
