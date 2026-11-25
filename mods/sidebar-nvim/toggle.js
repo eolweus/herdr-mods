@@ -62,7 +62,8 @@ function sidebarTerminal(kind, tab) {
     && (t.labels?.["herdr.tab"] === localId(tab) || t.address === parked));
 }
 
-export function sidebarMod(kind, argv, { compact = false } = {}) {
+// Without `park`, hiding the sidebar ends it, for programs that shouldn't keep running unseen (lazygit fetches every minute).
+export function sidebarMod(kind, argv, { compact = false, park = true } = {}) {
   return class Sidebar extends View {
     init(_props, cx) {
       if (checking()) return;
@@ -73,8 +74,10 @@ export function sidebarMod(kind, argv, { compact = false } = {}) {
       const pane = term && panes().find((p) => p.terminal === term.address);
 
       if (pane?.focused) {
-        run("terminal.park", { terminal: term.address });
-        setShared(parkedKey(kind, f.tab), term.address);
+        if (park) {
+          run("terminal.park", { terminal: term.address });
+          setShared(parkedKey(kind, f.tab), term.address);
+        } else run("terminal.kill", { terminal: term.address });
         if (compact) giveBack();
         return done();
       }
@@ -86,7 +89,8 @@ export function sidebarMod(kind, argv, { compact = false } = {}) {
       // Split off the tab's last pane so the sidebar lands on the right edge.
       const last = panes().filter((p) => p.tab === f.tab).at(-1);
       setShared(parkedKey(kind, f.tab), null);
-      if (term) {
+      if (term && !park) run("terminal.kill", { terminal: term.address });
+      if (term && park) {
         if (last && !last.focused) run("pane.focus", { pane: last.pane });
         run("terminal.keep", { terminal: term.address, place: "right" });
       } else {
