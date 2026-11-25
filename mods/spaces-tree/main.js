@@ -17,6 +17,12 @@ function find(node, id) {
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
 const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
 
+// Same as workspace-chrome's button, which the macOS rail has no room for.
+function unfold() {
+  setShared("sidebar.collapsed", false);
+  run("layout.resize", { id: "sidebar", px: shared("sidebar.width") ?? 268 });
+}
+
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
 function place(s, ps) {
@@ -926,6 +932,9 @@ export default class Spaces extends View {
         .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
         .when(Boolean(orphans), (el) => el.child(orphans))
-        .children(list));
+        .children(list))
+      .when(collapsed, (el) => el.child(h_flex().h(28).flex_none().items_center().justify_center()
+        .child(div().id("unfold").text_size(13).text_color(t.dim).cursor_pointer().hover((s) => s.text_color(t.foreground))
+          .tooltip("Expand the sidebar").on_click(unfold).child("»"))));
   }
 }
