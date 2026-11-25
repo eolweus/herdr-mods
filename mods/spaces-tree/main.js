@@ -160,6 +160,9 @@ export default class Spaces extends View {
       if (!map.has(a.space)) map.set(a.space, []);
       map.get(a.space).push(a);
     }
+    // Rows follow the tab bar's order; a tab's own agents keep theirs.
+    const at = new Map(sp.flatMap((w) => (w.tabs ?? []).map((tb, i) => [tb.id, i])));
+    for (const list of map.values()) list.sort((a, b) => (at.get(a.tab) ?? 0) - (at.get(b.tab) ?? 0));
     const perTab = new Map();
     for (const list of map.values()) for (const a of list) perTab.set(a.tab, (perTab.get(a.tab) ?? 0) + 1);
     for (const list of map.values()) for (const a of list) a.sharesTab = perTab.get(a.tab) > 1;
