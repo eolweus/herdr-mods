@@ -1,7 +1,31 @@
 import { View, div } from "gpui-kit";
-import { checking, closeOverlay, focused, notify, panes, props, run, setShared, shared, terminals } from "herdr";
+import { checking, closeOverlay, focused, layout, notify, panes, props, run, setShared, shared, terminals, window } from "herdr";
 
 // Shared by every sidebar-* mod as a hard link: mods can't import outside their own folder.
+
+// At or below this window width (the tab bar measures it), opening a sidebar with `compact` makes room for it.
+const COMPACT_WIDTH = 1720;
+
+function find(node, id) {
+  if (node?.id === id) return node;
+  for (const c of node?.children ?? []) {
+    const hit = find(c, id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// Narrows the left sidebar to its rail like workspace-chrome's button, and hides the right panel.
+function makeRoom() {
+  if ((shared("window.width") ?? Infinity) > COMPACT_WIDTH) return;
+  const root = layout(), width = find(root, "sidebar")?.size?.px;
+  if (width >= 160) {
+    setShared("sidebar.width", width);
+    setShared("sidebar.collapsed", true);
+    run("layout.resize", { id: "sidebar", px: window()?.platform === "macos" ? 76 : 44 });
+  }
+  if (find(root, "panel") && !find(root, "panel").hidden) run("layout.hide", { id: "panel" });
+}
 
 const localId = (id) => id?.replace(/^[^/]+\//, "");
 
@@ -15,7 +39,7 @@ function sidebarTerminal(kind, tab) {
     && (t.labels?.["herdr.tab"] === localId(tab) || t.address === parked));
 }
 
-export function sidebarMod(kind, argv) {
+export function sidebarMod(kind, argv, { compact = false } = {}) {
   return class Sidebar extends View {
     init(_props, cx) {
       if (checking()) return;
@@ -34,6 +58,7 @@ export function sidebarMod(kind, argv) {
         run("pane.focus", { pane: pane.pane });
         return done();
       }
+      if (compact) makeRoom();
       // Split off the tab's last pane so the sidebar lands on the right edge.
       const last = panes().filter((p) => p.tab === f.tab).at(-1);
       setShared(parkedKey(kind, f.tab), null);
