@@ -4,7 +4,7 @@ import { checking, closeOverlay, exec, focused, home, machines, nextCommand, ope
 
 const ACTIONS = [
   ["t", "Terminal", "A shell in this folder"],
-  ["c", "Chat", "A chat in this folder · pick Claude or Antigravity in its model menu"],
+  ["c", "Chat", "Claude or Antigravity in this folder"],
   ["f", "Folder", "Pick another folder first"],
 ];
 const BROWSER = ["b", "Browser", "A web browser (terminal-browser)"];
@@ -237,7 +237,7 @@ export default class Launcher extends View {
   render() {
     this.takePick();
     const t = theme();
-    const badge = (k) => div().w(26).h(26).flex().items_center().justify_center().rounded(7)
+    const badge = (k) => div().w(26).h(26).flex_none().flex().items_center().justify_center().rounded(7)
       .border_1().border_color(t.input).bg(t.raised).text_size(12.5).font_semibold().text_color(t.accent).child(k.toUpperCase());
     const others = machines().filter((m) => m.layout !== "unavailable").length > 1;
     const actions = this.mode === "space" && others ? [...ACTIONS, ["m", "Machine", `On ${this.machine ?? "this computer"} · press to switch`]]
