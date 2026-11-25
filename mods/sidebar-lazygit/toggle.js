@@ -44,6 +44,14 @@ function giveBack() {
 
 const localId = (id) => id?.replace(/^[^/]+\//, "");
 
+// A chat pane has no shell to inherit a folder from, so it publishes its own.
+function paneCwd(p) {
+  if (!p) return null;
+  if (p.mod !== "herdr-chat") return p.cwd ?? null;
+  const c = shared(`herdr-chat:pane:${p.pane}`);
+  return c?.cwd ?? c?.folder ?? null;
+}
+
 // Parking drops a terminal's herdr.tab label, so parked sidebars are remembered here.
 const parkedKey = (kind, tab) => `sidebar.${kind}.${localId(tab)}`;
 
@@ -82,7 +90,10 @@ export function sidebarMod(kind, argv, { compact = false } = {}) {
         if (last && !last.focused) run("pane.focus", { pane: last.pane });
         run("terminal.keep", { terminal: term.address, place: "right" });
       } else {
-        run("pane.split", { direction: "right", pane: last?.pane, argv: ["env", `HERDR_SIDEBAR=${kind}`, ...argv] });
+        const tabPanes = panes().filter((p) => p.tab === f.tab);
+        const folder = paneCwd(tabPanes.find((p) => p.focused)) ?? tabPanes.map(paneCwd).find(Boolean);
+        if (last && !last.focused) run("pane.focus", { pane: last.pane });
+        run("terminal.open", { argv: ["env", `HERDR_SIDEBAR=${kind}`, ...argv], place: "right", ...(folder && { folder }) });
       }
 
       let tries = 0;
