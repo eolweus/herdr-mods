@@ -47,7 +47,7 @@ export class FileTab {
       return;
     }
     // Splitting this pane and closing it would leave nvim a quarter of the space; split a neighbour instead.
-    const at = mine.indexOf(me), source = (mine[at - 1] ?? mine[at + 1]).pane;
+    const at = mine.findIndex((x) => x.pane === me.pane), source = (mine[at - 1] ?? mine[at + 1]).pane;
     run("pane.close", { pane: me.pane });
     run("pane.focus", { pane: source });
     run("pane.split", { pane: source, direction: "right", argv });
