@@ -61,6 +61,7 @@
     "ctrl-9": "space.select:9",
     "cmd-o": "mod.open:sidebar-nvim",
     "cmd-l": "mod.open:sidebar-lazygit",
+    "cmd-alt-l": "mod.open:layout-reload",
     "cmd-e": "mod.open:panel-changes",
     "cmd-shift-n": "space.new",
     "cmd-r": "space.rename",

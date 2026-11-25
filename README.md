@@ -74,6 +74,10 @@ Some mods need other tools:
 
 <img src="mods/scheduler/screenshot.png" width="600" alt="Scheduler">
 
+### Reload layout
+
+`mods/layout-reload`. Cmd+Option+L switches to the next layout and straight back, so the layout's mods restart with their latest code.
+
 ### lazygit sidebar
 
 `mods/sidebar-lazygit`. Cmd+L opens lazygit beside the current tab, and closes it again. Each tab keeps its own.

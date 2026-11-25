@@ -1,0 +1,11 @@
+{
+  "place": "none",
+  "title": "Reload layout",
+  "overlay": {
+    "kind": "popup",
+    "frame": "none",
+    "width": 1,
+    "height": 1
+  },
+  "description": "Cmd+Option+L switches to the next layout and straight back, so the layout's mods restart with their latest code."
+}
