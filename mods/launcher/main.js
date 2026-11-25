@@ -166,6 +166,7 @@ export default class Launcher extends View {
       const chatTabs = new Set(panes().filter((x) => x.mod === "herdr-chat").map((x) => x.tab));
       for (const t of made?.tabs ?? []) if (!chatTabs.has(t.id)) run("tab.close", { id: t.id, confirmed: true });
       closeOverlay(props().overlay);
+      run("herdr-chat.focus");
     });
   }
 
