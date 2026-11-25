@@ -32,7 +32,7 @@ function label(tab, lead) {
 
 export default class Tabs extends View {
   init() {
-    this.pressed = null;
+    this.drag = null; // { from, x, moving, over: { i, after } }
     this.scroll = ScrollHandle.new();
     try { this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}"); } catch { this.panels = {}; }
     if (!this.panels || typeof this.panels !== "object" || Array.isArray(this.panels)) this.panels = {};
@@ -155,17 +155,27 @@ export default class Tabs extends View {
       const program = lead?.program ?? (chats.length ? panes().find(p => p.program?.key === "claude")?.program ?? { icon: "icons/claude.svg", tint: true } : null);
       c = { ...c, status: urgent(c.status, ...chats.map(p => shared(`herdr-chat:pane:${p.pane}`)?.status)) };
       const name = label(c, lead);
-      return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
+      const over = this.drag?.moving && this.drag.over?.i === i ? this.drag.over : null;
+      return h_flex().id(`tab-${c.id}`).relative().h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         // A rename or status dot on this or an earlier tab can push the active one out.
         .when(i <= active, el => el.on_size_change((_size, cx) => { this.scroll.scroll_to_item(active); cx.notify(); }))
         .border(1).border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover))
-        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
-        .on_mouse_up("left", () => {
-          const from = this.pressed; this.pressed = null;
-          if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
-          else run("tab.select", { id: c.id });
+        .when(this.drag?.moving && this.drag.from === i, el => el.opacity(0.45))
+        .on_mouse_down("left", (e, cx) => {
+          cx.stop_propagation();
+          this.drag = { from: i, x: e.position.x, moving: false, over: null };
+          this.dropped = false;
+          if (e.click_count === 2) run("tab.rename", { id: c.id });
         })
+        .on_mouse_move((e, cx) => {
+          if (!this.drag?.moving) return;
+          const next = { i, after: e.local_position.x > e.bounds.width / 2 };
+          if (this.drag.over?.i !== next.i || this.drag.over?.after !== next.after) { this.drag.over = next; cx.notify(); }
+        })
+        .on_mouse_up("left", () => { if (!this.drag?.moving && !this.dropped) run("tab.select", { id: c.id }); })
+        .when(Boolean(over), el => el.child(div().absolute().top(4).bottom(4).w(2).rounded(1).bg(t.accent)
+          .when(over.after, d => d.right(-3)).when(!over.after, d => d.left(-3))))
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
         .child(div().max_w(170).truncate().child(name))
@@ -200,7 +210,24 @@ export default class Tabs extends View {
     const mc = (shared("machine.colors") ?? {})[machine ?? "local"];
     if (space) this.syncBorder(mc);
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(mc ? 2 : 1).border_color(mc ?? t.border)
-      .on_mouse_up("left", () => { this.pressed = null; })
+      .on_window_mouse_move((e, cx) => {
+        const d = this.drag;
+        if (!d) return;
+        if (!d.moving && Math.abs(e.position.x - d.x) > 4) { d.moving = true; cx.notify(); }
+        // Dragged well off the bar: no drop target, so letting go cancels.
+        if (d.moving && d.over && (e.local_position.y < -20 || e.local_position.y > e.bounds.height + 20)) { d.over = null; cx.notify(); }
+      })
+      .on_window_mouse_up("left", (_e, cx) => {
+        const d = this.drag;
+        this.drag = null;
+        this.dropped = Boolean(d?.moving);
+        if (d?.moving && d.over) {
+          const gap = d.over.i + (d.over.after ? 1 : 0);
+          const to = gap > d.from ? gap - 1 : gap;
+          if (to !== d.from) run("tab.move", { id: shown[d.from].id, index: to + 1 });
+        }
+        cx.notify();
+      })
       .on_scroll_wheel(e => this.wheel(e))
       // Mods aren't told the window's size; the tab bar spans it, less the sidebar.
       .on_size_change(size => {
