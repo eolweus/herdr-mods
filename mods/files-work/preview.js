@@ -1,11 +1,12 @@
 import { div, image } from "gpui-kit";
-import { v_flex, Editor, EditorState } from "gpui-base";
+import { v_flex, Editor, EditorState, TextView } from "gpui-base";
 import { appHome, exec, readTextFile, settings, theme, window } from "herdr";
 import * as fs from "fs/promises";
 import { Buffer } from "buffer";
 
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html" };
 const IMAGE = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "ico"]);
+const MARKDOWN = new Set(["md", "markdown"]);
 const MAX = 100 * 1024 * 1024;
 // Herdr started from the Dock doesn't have Homebrew on its PATH.
 const PATH = 'PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"; ';
@@ -32,6 +33,8 @@ export class Preview {
     this.rel = `${CACHE}/${Date.now().toString(36)}-${made++}`;
     this.dir = `${appHome()}/${this.rel}`;
     this.zoom = 1;
+    this.markdown = MARKDOWN.has(ext);
+    this.rendered = this.markdown && !line;
     this.width = 0;
     cx.spawn(async (cx) => {
       try {
@@ -58,6 +61,7 @@ export class Preview {
     catch { this.kind = "other"; return; }
     if (text === null) throw new Error("This file is no longer there");
     if (text.includes("\0")) { this.kind = "other"; return; }
+    if (this.markdown) this.text = text;
     const t = theme(), ext = extOf(this.path) || "txt";
     this.code = EditorState.new({ language: LANG[ext] ?? ext, readonly: true,
       value: text.length > 400000 ? text.slice(0, 400000) + "\n… (file truncated)" : text,
@@ -138,6 +142,8 @@ ls "$2"`;
     if (this.error) return note(this.error);
     if (this.kind === "text") {
       if (!this.code) return note("Loading file…");
+      if (this.rendered && this.text !== undefined) return v_flex().id("markdown").flex_1().min_h(0).overflow_y_scrollbar().items_center().px(24).py(20)
+        .child(div().w_full().max_w(760).child(TextView.markdown(`md:${this.path}`, this.text).selectable(true).text_size(14).w_full()));
       const font = settings();
       return Editor.new(this.code).font_family(font.font_family).text_size(font.font_size).flex_1().min_h(0);
     }

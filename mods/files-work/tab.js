@@ -67,6 +67,8 @@ export class FileTab {
           .child(button("zoom-out", "−", "Zoom out", (_e, cx) => { p.zoom = Math.max(0.25, p.zoom / 1.25); cx.notify(); }))
           .child(div().w(40).text_center().text_size(12).text_color(t.dim).child(`${Math.round(p.zoom * 100)}%`))
           .child(button("zoom-in", "+", "Zoom in", (_e, cx) => { p.zoom = Math.min(6, p.zoom * 1.25); cx.notify(); })))
+        .when(p.markdown && Boolean(p.code), (el) => el.child(button("source", p.rendered ? "Source" : "Reader",
+          p.rendered ? "Show the Markdown source" : "Show it rendered", (_e, cx) => { p.rendered = !p.rendered; cx.notify(); })))
         .child(button("outside", "Open", "Open in its default app", () => p.openOutside().catch((e) => notify({ title: "Couldn't open the file", body: String(e?.message ?? e), level: "error" }))))
         .child(button("nvim", "nvim", "Replace this tab with nvim", () => this.nvim())))
       .child(p.body(t));
