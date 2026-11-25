@@ -18,13 +18,28 @@ function find(node, id) {
 // Narrows the left sidebar to its rail like workspace-chrome's button, and hides the right panel.
 function makeRoom() {
   if ((shared("window.width") ?? Infinity) > COMPACT_WIDTH) return;
-  const root = layout(), width = find(root, "sidebar")?.size?.px;
-  if (width >= 160) {
+  const root = layout(), width = find(root, "sidebar")?.size?.px, panel = find(root, "panel");
+  const made = { sidebar: width >= 160 ? width : null, panel: Boolean(panel && !panel.hidden) };
+  if (made.sidebar) {
     setShared("sidebar.width", width);
     setShared("sidebar.collapsed", true);
     run("layout.resize", { id: "sidebar", px: window()?.platform === "macos" ? 76 : 44 });
   }
-  if (find(root, "panel") && !find(root, "panel").hidden) run("layout.hide", { id: "panel" });
+  if (made.panel) run("layout.hide", { id: "panel" });
+  setShared("sidebar.room", made.sidebar || made.panel ? made : null);
+}
+
+// Puts back only what makeRoom collapsed, and only if it's still collapsed.
+function giveBack() {
+  const made = shared("sidebar.room");
+  if (!made) return;
+  setShared("sidebar.room", null);
+  const root = layout();
+  if (made.sidebar && (find(root, "sidebar")?.size?.px ?? Infinity) < 160) {
+    setShared("sidebar.collapsed", false);
+    run("layout.resize", { id: "sidebar", px: made.sidebar });
+  }
+  if (made.panel && find(root, "panel")?.hidden) run("layout.show", { id: "panel" });
 }
 
 const localId = (id) => id?.replace(/^[^/]+\//, "");
@@ -52,6 +67,7 @@ export function sidebarMod(kind, argv, { compact = false } = {}) {
       if (pane?.focused) {
         run("terminal.park", { terminal: term.address });
         setShared(parkedKey(kind, f.tab), term.address);
+        if (compact) giveBack();
         return done();
       }
       if (pane) {
