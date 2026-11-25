@@ -1,9 +1,10 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, appHome, checking, exec, layout, machines, readTextFile, run, setShared, shared, theme, writeTextFile } from "herdr";
-import { STATS, agentOf, children, describe, isClaude, isShell, parseStats, terminalOf } from "./stats.js";
+import { agents, appHome, checking, exec, layout, machines, panes, readTextFile, run, setShared, shared, spaces, theme, writeTextFile } from "herdr";
+import { SESSIONS, STATS, agentOf, children, describe, isClaude, isShell, parseSessions, parseStats, terminalOf } from "./stats.js";
 
 const EVERY_MS = 4000;
+const SESSIONS_MS = 10000;
 
 // The same palette as space avatars; spaces-tree reads machine-colors.json into shared "machine.colors".
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
@@ -69,6 +70,31 @@ function project(cwd) {
   return cwd.split("/").pop();
 }
 
+const tokens = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+const since = (ms) => (Date.now() - ms < 60000 ? "now" : `${ago((Date.now() - ms) / 1000)} ago`);
+const modelName = (id) => {
+  const m = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(id ?? "");
+  return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}.${m[3]}` : id?.replace(/^claude-/, "") ?? null;
+};
+const flag = (args, name) => new RegExp(`--${name}[= ](\\S+)`).exec(args ?? "")?.[1] ?? null;
+const ENTRY = { "claude-desktop": "Claude app", cli: "Terminal", "sdk-ts": "Agent SDK", "sdk-py": "Agent SDK" };
+
+// herdr-chat panes publish their session to shared "herdr-chat:info:<pane>".
+function herdrChats(machine) {
+  const out = new Map();
+  for (const p of panes()) {
+    if (p.mod !== "herdr-chat") continue;
+    const info = shared(`herdr-chat:info:${p.pane}`);
+    if (info?.session && (info.machine ?? null) === machine) out.set(info.session, { pane: p.pane, tab: p.tab, info });
+  }
+  return out;
+}
+
+function tabLabel(tabId) {
+  for (const sp of spaces()) for (const tab of sp.tabs) if (tab.id === tabId) return `${sp.name} · ${tab.name}`;
+  return null;
+}
+
 const mine = (p, home) => Number(Boolean(p.docker || (home && p.cwd?.startsWith(home))));
 const short = (path, home) => (path && home && path.startsWith(home) ? `~${path.slice(home.length)}` : path);
 
@@ -77,6 +103,9 @@ export default class Machines extends View {
     this.stats = {};
     this.errors = {};
     this.busy = new Set();
+    this.sessions = {};
+    this.sessionsAt = {};
+    this.opened = new Set();
     try { this.folded = new Set(JSON.parse(localStorage.getItem("folded") ?? "[]")); } catch { this.folded = new Set(); }
     if (checking()) return;
     cx.timer.every(EVERY_MS, (cx) => this.poll(cx));
@@ -128,6 +157,17 @@ export default class Machines extends View {
           this.errors[k] = String(e?.message ?? e);
         }
         this.busy.delete(k);
+        cx.notify();
+      });
+      if (this.folded.has(`${k}:agents`) || this.busy.has(`${k}:sessions`) || Date.now() - (this.sessionsAt[k] ?? 0) < SESSIONS_MS) continue;
+      this.busy.add(`${k}:sessions`);
+      cx.spawn(async (cx) => {
+        try {
+          const r = await exec("sh", ["-c", SESSIONS], { on: m.name, timeout: 15000 });
+          this.sessions[k] = parseSessions(r.stdout);
+        } catch {}
+        this.sessionsAt[k] = Date.now();
+        this.busy.delete(`${k}:sessions`);
         cx.notify();
       });
     }
@@ -253,6 +293,106 @@ export default class Machines extends View {
     ] };
   }
 
+  sessionsSection(m, s, list, home, t) {
+    const k = this.key(m);
+    const kids = children(s);
+    const tree = (pid) => {
+      const out = [];
+      const walk = (id, depth) => { for (const c of kids.get(id) ?? []) { out.push(c); if (depth < 12) walk(c.pid, depth + 1); } };
+      walk(pid, 0);
+      return out;
+    };
+    const chats = herdrChats(m.name);
+    const rows = list.map((r) => {
+      const proc = s.procs.get(String(r.pid));
+      if (!proc || !isClaude(proc)) return null;
+      const procs = tree(proc.pid);
+      const chat = chats.get(r.sessionId);
+      const term = chat ? null : agentIn(m, terminalOf(s, r.pid));
+      const where = chat ? { kind: "Herdr chat", label: tabLabel(chat.tab), focus: { pane: chat.pane } }
+        : term ? { kind: "Herdr terminal", label: term.label, focus: { terminal: term.address } }
+        : { kind: ENTRY[r.entrypoint] ?? r.entrypoint ?? "Claude Code", label: null, focus: null };
+      const j = r.transcript;
+      const max = chat?.info?.context?.max || null;
+      return {
+        r, proc, procs, where, chat,
+        busy: r.status === "busy",
+        title: r.name || chat?.info?.title || project(r.cwd),
+        mem: procs.reduce((n, p) => n + p.rss, proc.rss),
+        cpu: procs.reduce((n, p) => n + p.cpu, proc.cpu),
+        model: modelName(flag(proc.args, "model") ?? j?.model ?? chat?.info?.model),
+        effort: flag(proc.args, "effort"),
+        mode: chat?.info?.mode ?? flag(proc.args, "permission-mode"),
+        context: j?.context || chat?.info?.context?.used || 0, max,
+        branch: j?.branch && j.branch !== "HEAD" ? j.branch : chat?.info?.branch ?? null,
+        last: Math.max(r.updatedAt ?? 0, r.statusUpdatedAt ?? 0, j?.mtime ?? 0, r.startedAt ?? 0),
+      };
+    }).filter(Boolean).sort((a, b) => Number(b.busy) - Number(a.busy) || b.last - a.last);
+    if (!rows.length) return null;
+    const resting = [...chats.keys()].filter((id) => !rows.some((x) => x.r.sessionId === id)).length;
+    const total = rows.reduce((n, x) => n + x.mem, 0);
+    const working = rows.filter((x) => x.busy).length;
+    const stale = rows.filter((x) => !x.busy && Date.now() - x.last > 86400000).length;
+    const extra = [`${rows.length} running`, working && `${working} working`, bytes(total), stale && `${stale} idle over a day`].filter(Boolean).join(" · ");
+
+    const head = h_flex().gap(12).px(10).pb(4).border_b_1().border_color(t.border)
+      .child(this.cell(null, "Session", t, t.dim)).child(this.cell(120, "Model", t, t.dim))
+      .child(this.cell(84, "Context", t, t.dim)).child(this.cell(60, "Memory", t, t.dim))
+      .child(this.cell(52, "CPU", t, t.dim)).child(this.cell(76, "Active", t, t.dim));
+    const row = (x) => {
+      const id = `${k}:${x.r.pid}`;
+      const open = this.opened.has(id);
+      const dot = x.busy ? t.working : x.chat?.info && x.r.status === "idle" && Date.now() - x.last < 600000 ? t.done : t.dim;
+      const sub = [x.where.kind, x.where.label ?? short(x.r.cwd, home), x.branch].filter(Boolean).join(" · ");
+      const ctx = x.context ? (x.max ? `${tokens(x.context)} · ${Math.round((100 * x.context) / x.max)}%` : tokens(x.context)) : "–";
+      const line = h_flex().id(`session-${id}`).gap(12).px(10).py(5).rounded(6).items_center().cursor_pointer()
+        .hover((st) => st.bg(t.hover))
+        .on_click((_e, cx) => { this.opened.has(id) ? this.opened.delete(id) : this.opened.add(id); cx.notify(); })
+        .child(div().size(7).rounded(4).flex_none().bg(dot))
+        .child(v_flex().flex_1().min_w(0)
+          .child(div().text_size(12.5).font_medium().truncate().text_color(t.foreground).child(x.title))
+          .child(div().text_size(11).truncate().text_color(t.dim).child(sub)))
+        .child(this.cell(120, [x.model, x.effort].filter(Boolean).join(" · ") || "–", t, t.muted))
+        .child(this.cell(84, ctx, t, x.max && x.context / x.max > 0.8 ? t.working : t.muted))
+        .child(this.cell(60, bytes(x.mem), t, x.mem > 1.5 * 2 ** 30 ? t.working : t.muted))
+        .child(this.cell(52, `${x.cpu.toFixed(1)}%`, t, x.cpu > 50 ? t.working : t.muted))
+        .child(this.cell(76, x.busy ? "working" : since(x.last), t, x.busy ? t.working : t.muted));
+      if (!open) return line;
+      // Each thing Claude started, with everything it started in turn; a shell is named by what runs in it.
+      const groups = new Map();
+      for (const c of kids.get(x.proc.pid) ?? []) {
+        const sub = [c, ...tree(c.pid)];
+        const work = sub.filter((p) => !isShell(p)).sort((a, b) => b.rss - a.rss)[0];
+        const name = isShell(c) ? (work ? describe(work) : "shell") : describe(c);
+        const g = groups.get(name) ?? { name, rss: 0, cpu: 0, n: 0 };
+        for (const p of sub) { g.rss += p.rss; g.cpu += p.cpu; g.n += 1; }
+        groups.set(name, g);
+      }
+      const proc = (name, n, rss, cpu) => h_flex().gap(12).py(2).items_center()
+        .child(this.cell(null, name, t, t.foreground))
+        .child(this.cell(120, n > 1 ? `${n} processes` : "", t, t.dim))
+        .child(div().w(84).flex_none())
+        .child(this.cell(60, bytes(rss), t, t.muted))
+        .child(this.cell(52, `${cpu.toFixed(1)}%`, t, cpu > 50 ? t.working : t.muted))
+        .child(div().w(76).flex_none());
+      const facts = [
+        `pid ${x.r.pid}`, x.r.version && `v${x.r.version}`, x.r.startedAt && `up ${ago((Date.now() - x.r.startedAt) / 1000)}`,
+        x.mode && `${x.mode} mode`, x.r.bridgeSessionId && "Remote Control on",
+      ].filter(Boolean).join(" · ");
+      const detail = v_flex().gap(2).pl(29).pr(10).pb(8)
+        .child(h_flex().gap(10).items_center().pb(4)
+          .child(div().flex_1().min_w(0).text_size(11).truncate().text_color(t.dim).child(`${short(x.r.cwd, home)} · ${facts}`))
+          .when(Boolean(x.where.focus), (el) => el.child(div().id(`focus-${id}`).flex_none().text_size(11.5).text_color(t.accent).cursor_pointer()
+            .hover((st) => st.opacity(0.8)).on_click(() => run("pane.focus", x.where.focus)).child("Show"))))
+        .child(proc("Claude Code", 1, x.proc.rss, x.proc.cpu))
+        .children([...groups.values()].sort((a, b) => b.rss - a.rss).slice(0, 10).map((g) => proc(g.name, g.n, g.rss, g.cpu)));
+      return v_flex().rounded(6).bg(t.background).child(line).child(detail);
+    };
+    return { extra, content: [v_flex().gap(1).child(head).children(rows.map(row))
+      .when(resting > 0, (el) => el.child(div().px(10).pt(4).text_size(11.5).text_color(t.dim)
+        .child(`${resting} more Herdr ${resting === 1 ? "chat" : "chats"} stopped while idle; ${resting === 1 ? "it starts" : "they start"} again with the next message`)))] };
+  }
+
   topTable(m, s, home, t) {
     return v_flex().gap(1)
       .child(h_flex().gap(12).px(10).pb(4).border_b_1().border_color(t.border)
@@ -284,7 +424,7 @@ export default class Machines extends View {
         .child(div().text_size(12).text_color(t.dim).truncate()
           .child(offline ? "offline" : s ? `${s.host} · ${s.os} · up ${ago(Date.now() / 1000 - s.boot)}` : err ? `unreachable: ${err}` : "reading…")));
 
-    const agentsPart = s ? this.agentsSection(m, s, home, t) : null;
+    const agentsPart = s ? (this.sessions[k]?.length ? this.sessionsSection(m, s, this.sessions[k], home, t) : null) ?? this.agentsSection(m, s, home, t) : null;
     const body = !s ? [] : [
       h_flex().flex_wrap().gap(10)
         .child(this.gauge("CPU", s.cpu, `${Math.round(s.cpu)}%`, `${s.cores} cores · load ${s.load}`, t))
@@ -292,7 +432,7 @@ export default class Machines extends View {
         .when(s.swapTotal > 0, (el) => el.child(this.gauge("Swap", (100 * s.swapUsed) / s.swapTotal, bytes(s.swapUsed), `of ${bytes(s.swapTotal)}`, t)))
         .child(this.gauge("Disk", (100 * s.diskUsed) / s.diskTotal, bytes(s.diskUsed), `of ${bytes(s.diskTotal)}`, t)),
       ...this.section(`${k}:top`, "Top processes", null, [this.topTable(m, s, home, t)], t),
-      ...(agentsPart ? this.section(`${k}:agents`, "Agents", agentsPart.extra, agentsPart.content, t) : []),
+      ...(agentsPart ? this.section(`${k}:agents`, "Claude sessions", agentsPart.extra, agentsPart.content, t) : []),
       ...this.section(`${k}:ports`, "Listening ports", `${s.ports.length} · click to open`, [this.portsTable(m, s, home, t)], t),
     ];
     const open = !this.folded.has(k);

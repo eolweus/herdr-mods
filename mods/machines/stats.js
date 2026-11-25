@@ -184,3 +184,39 @@ export function children(stats) {
   }
   return kids;
 }
+
+// Claude Code registers each running CLI in ~/.claude/sessions/<pid>.json; the transcript's newest
+// assistant message gives the model, context size and branch. Read only while the Claude section is open.
+export const SESSIONS = String.raw`
+t=$(printf '\t')
+for f in "$HOME"/.claude/sessions/*.json; do
+  [ -f "$f" ] || continue
+  printf 'R%s%s\n' "$t" "$(tr -d '\n' < "$f")"
+  id=$(grep -o '"sessionId":"[^"]*"' "$f" | head -1 | cut -d'"' -f4)
+  for j in "$HOME"/.claude/projects/*/"$id".jsonl; do
+    [ -n "$id" ] && [ -f "$j" ] || continue
+    if [ "$(uname)" = Darwin ]; then m=$(stat -f %m "$j"); else m=$(stat -c %Y "$j"); fi
+    tail=$(tail -c 400000 "$j")
+    last=$(printf '%s\n' "$tail" | grep '"type":"assistant"' | grep -v '"model":"<synthetic>"' | tail -1)
+    model=$(printf '%s' "$last" | grep -o '"model":"[^"]*"' | head -1 | cut -d'"' -f4)
+    usage=$(printf '%s' "$last" | grep -o '"usage":{[^}]*' | head -1)
+    branch=$(printf '%s\n' "$tail" | grep -o '"gitBranch":"[^"]*"' | tail -1 | cut -d'"' -f4)
+    printf 'J%s%s%s%s%s%s%s%s%s%s\n' "$t" "$id" "$t" "$m" "$t" "$model" "$t" "$branch" "$t" "$usage"
+    break
+  done
+done
+true`;
+
+export function parseSessions(stdout) {
+  const list = [], transcripts = {};
+  for (const line of stdout.split("\n")) {
+    const f = line.split("\t");
+    if (f[0] === "R") {
+      try { list.push(JSON.parse(f.slice(1).join("\t"))); } catch {}
+    } else if (f[0] === "J") {
+      const n = (k) => Number(new RegExp(`"${k}":(\\d+)`).exec(f[5] ?? "")?.[1] ?? 0);
+      transcripts[f[1]] = { mtime: Number(f[2]) * 1000, model: f[3] || null, branch: f[4] || null, context: n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens") };
+    }
+  }
+  return list.map((r) => ({ ...r, transcript: transcripts[r.sessionId] ?? null }));
+}
