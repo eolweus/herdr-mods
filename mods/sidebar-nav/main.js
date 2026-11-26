@@ -37,16 +37,16 @@ export default class SidebarNav extends View {
     this.where = where;
 
     const count = waiting();
-    return v_flex().size_full().px(8).pt(6).gap(2).bg(t.chrome)
+    return v_flex().size_full().px(8).pt(8).gap(3).bg(t.chrome)
       .children(VIEWS.map(([id, label, icon]) => {
         const on = id === active;
-        return h_flex().id(`nav-${id}`).h(32).px(narrow ? 0 : 10).gap(10).items_center().rounded(8).cursor_pointer()
+        return h_flex().id(`nav-${id}`).h(36).px(narrow ? 0 : 10).gap(11).items_center().rounded(8).cursor_pointer()
           .when(narrow, (el) => el.justify_center())
-          .text_size(13.5).text_color(on ? t.foreground : t.muted)
+          .text_size(14.5).text_color(on ? t.foreground : t.muted)
           .when(on, (el) => el.bg(t.selected))
           .when(!on, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground)))
           .on_click(() => show(on ? "work" : id))
-          .child(svg(`mods/sidebar-nav/${icon}.svg`).size(16))
+          .child(svg(`mods/sidebar-nav/${icon}.svg`).size(18))
           .when(!narrow, (el) => el.child(div().flex_1().child(label)))
           .when(id === "needs-view" && count > 0 && !narrow, (el) => el.child(div().flex_none().min_w(18).h(18).px(5).rounded(9).bg(t.blocked)
             .text_size(11).font_semibold().text_color(t.background).flex().items_center().justify_center().child(String(count))));
