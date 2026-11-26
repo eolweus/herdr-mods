@@ -1,8 +1,8 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { focused, layout, run, theme } from "herdr";
+import { focused, layout, panes, run, shared, theme } from "herdr";
 
-const VIEWS = [["machines-view", "Machines", "server"], ["scheduler-view", "Scheduler", "clock"], ["artifacts-view", "Artifacts", "layers"], ["plugins-view", "Plugins", "puzzle"]];
+const VIEWS = [["needs-view", "Needs you", "bell"], ["machines-view", "Machines", "server"], ["scheduler-view", "Scheduler", "clock"], ["artifacts-view", "Artifacts", "layers"], ["plugins-view", "Plugins", "puzzle"]];
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -13,9 +13,19 @@ function find(node, id) {
   return null;
 }
 
+// Chats publish their status to shared state; terminals report theirs; handoffs run without a pane.
+function waiting() {
+  const ps = panes().filter((p) => (p.mod === "herdr-chat" ? shared(`herdr-chat:pane:${p.pane}`)?.status : p.terminal ? p.status : null) === "blocked").length;
+  return ps + (shared("handoffs") ?? []).filter((h) => h.status === "blocked").length;
+}
+
 const show = (id) => run("layout.select", { stack: "work-stack", child: id });
 
 export default class SidebarNav extends View {
+  init(_props, cx) {
+    cx.timer.every(1000, (cx) => cx.notify());
+  }
+
   render() {
     const t = theme();
     const root = layout();
@@ -26,6 +36,7 @@ export default class SidebarNav extends View {
     if (this.where !== undefined && where !== this.where && active !== "work") show("work");
     this.where = where;
 
+    const count = waiting();
     return v_flex().size_full().px(8).pt(6).gap(2).bg(t.chrome)
       .children(VIEWS.map(([id, label, icon]) => {
         const on = id === active;
@@ -36,7 +47,9 @@ export default class SidebarNav extends View {
           .when(!on, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground)))
           .on_click(() => show(on ? "work" : id))
           .child(svg(`mods/sidebar-nav/${icon}.svg`).size(16))
-          .when(!narrow, (el) => el.child(label));
+          .when(!narrow, (el) => el.child(div().flex_1().child(label)))
+          .when(id === "needs-view" && count > 0 && !narrow, (el) => el.child(div().flex_none().min_w(18).h(18).px(5).rounded(9).bg(t.blocked)
+            .text_size(11).font_semibold().text_color(t.background).flex().items_center().justify_center().child(String(count))));
       }));
   }
 }
